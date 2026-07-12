@@ -31,6 +31,10 @@ class GenerationUnavailable(Exception):
 
 
 def _format_sources(chunks: list[RetrievedChunk]) -> str:
+    # context_summary is LLM-generated from untrusted document text (see
+    # app/ingestion/chunking.summarize_document) and is itself untrusted content
+    # flowing into this prompt — same trust boundary as c.text, mitigated the
+    # same way: the citation validator requires verbatim quotes from c.text.
     return "\n\n".join(
         f"[chunk_id={c.chunk_id} document_id={c.document_id} page={c.page}]\n"
         f"{c.context_summary}\n{c.text}"
