@@ -38,10 +38,14 @@ tenant metadata, and the ingestion job queue (`FOR UPDATE SKIP LOCKED`).
 ```bash
 cp .env.example .env          # fill in LLM API key
 docker compose up -d db
-uv sync                       # or: pip install -e ".[dev]"
+UV_HTTP_TIMEOUT=180 uv sync --extra dev   # or: pip install -e ".[dev]"
+                                           # extend timeout: torch/numpy/scipy are large downloads
 uv run python -m scripts.migrate
 uv run uvicorn app.main:app --reload
 ```
+
+> **Windows note:** if `uv run pytest` fails with `Access is denied`, it's AV/Windows
+> blocking the shim exe — use `uv run python -m pytest` instead.
 
 Ingest documents:
 
