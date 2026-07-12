@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     llm_model: str = "claude-sonnet-5"
     llm_api_key: str = ""
+    # Cheap/fast tier for contextual-retrieval doc summaries — deliberately not
+    # llm_model, since the whole point is that this call is near-free per document.
+    summary_model: str = "claude-haiku-4-5-20251001"
 
     embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
