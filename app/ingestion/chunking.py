@@ -54,11 +54,14 @@ def split_into_chunks(pages: list[tuple[int, str]]) -> list[Chunk]:
         current: list[str] = []
         length = 0
         for sentence in sentences:
-            if length + len(sentence) > max_chars and current:
+            # +1 accounts for the " " separator " ".join(current) below will add
+            # once this sentence joins an already-non-empty chunk.
+            added = len(sentence) + (1 if current else 0)
+            if length + added > max_chars and current:
                 chunks.append(Chunk(index=len(chunks), page=page_no, text=" ".join(current)))
-                current, length = [], 0
+                current, length, added = [], 0, len(sentence)
             current.append(sentence)
-            length += len(sentence)
+            length += added
         if current:
             chunks.append(Chunk(index=len(chunks), page=page_no, text=" ".join(current)))
     return chunks
