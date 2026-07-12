@@ -1,0 +1,3 @@
+{"id": "g001", "question": "What was the company's total revenue for fiscal year 2024?", "ground_truth": "REPLACE: exact answer from your corpus", "source_document": "REPLACE: source_uri", "source_pages": [12]}
+{"id": "g002", "question": "Which risk factors relate to supply chain concentration?", "ground_truth": "REPLACE", "source_document": "REPLACE", "source_pages": [34, 35]}
+{"id": "g003", "question": "REPLACE: exact-match query containing an alphanumeric identifier (tests the lexical branch)", "ground_truth": "REPLACE", "source_document": "REPLACE", "source_pages": []}
