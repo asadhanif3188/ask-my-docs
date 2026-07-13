@@ -264,8 +264,35 @@ is now removed; an error that hides the thing it is reporting is not an error me
 **Fix:** Control characters become a **space** (never nothing — deleting them
 could fuse the tokens either side, the exact mistake this module exists to avoid),
 and `_normalize()` now cleans *then* collapses, the same order ingestion uses.
-Scope chosen from data, not intuition: a survey of the corpus found 800 `\x7f`
-and **zero** other bullet glyphs, so no speculative handling was added.
+
+**Then the process fix, which mattered more than the bug.** This was the *third*
+artifact of the same family found one at a time — `$\n391,035`, then
+`$\n(4,638\n)`, then `\x7f` — each one triggering its own ~20-minute re-ingest.
+Chasing them individually was the actual mistake. So the corpus was finally
+**audited in full**, up front, and the rest of the family fell out at once:
+
+| Artifact | Count | Why the gate rejected a faithful quote |
+|---|---|---|
+| `’ ‘` curly quotes | 2,290 | the model types the ASCII `'` |
+| `“ ”` curly doubles | 1,376 | the model types the ASCII `"` |
+| `\x7f` bullets | 762 | invisible; the model omits it |
+| `— –` dashes | 526 | the model types a hyphen |
+| `■` checkbox glyph | 248 | the model omits it |
+| `€` stranded from digits | 11 | same bug as `$`, different currency |
+
+Measured against the real corpus: of 400 model-style quotes containing any of
+these, **33/400 (8%) validated before the audit; 400/400 (100%) after.** Roughly
+every other passage in a 10-K carries a curly apostrophe, so this was quietly
+rejecting a large share of correct answers.
+
+`text_norm` therefore does not *repair* text, it **canonicalises** it — and it runs
+on both the chunk and the quote, so the filing's typography and the model's ASCII
+fold to the same string and either validates.
+**Consequence worth stating plainly:** none of this needed a re-ingest. Because
+both sides are canonicalised at comparison time, a quote validates against a chunk
+written by *any* pipeline version. Re-ingestion only buys cleaner embeddings and
+cleaner prompt text — it is a quality improvement, not a correctness requirement,
+and treating it as the latter cost three unnecessary passes over the corpus.
 **Regression guard:** `tests/test_text_norm.py` (control char to space; never
 fuses digit groups) and
 `test_quote_validates_against_a_chunk_still_holding_a_bullet_control_char`, which
