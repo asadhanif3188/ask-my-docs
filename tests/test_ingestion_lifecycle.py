@@ -38,13 +38,33 @@ async def test_malformed_pdf_is_quarantined_not_crashed(tmp_path):
         parse_pdf(bad)
 
 
+def test_ingest_fingerprint_changes_when_the_pipeline_version_changes():
+    """Skip-if-unchanged compares the file hash, so a pipeline fix would otherwise
+    leave every ingested document on stale chunks (INCIDENTS.md) — the fingerprint
+    must therefore cover the pipeline, not just the bytes."""
+    from app.ingestion import pipeline
+
+    data = b"same file bytes"
+    before = pipeline.content_hash(data)
+
+    original = pipeline.INGEST_VERSION
+    try:
+        pipeline.INGEST_VERSION = original + 1
+        after = pipeline.content_hash(data)
+    finally:
+        pipeline.INGEST_VERSION = original
+
+    assert before != after, "a pipeline bump must invalidate cached ingests"
+    assert pipeline.content_hash(data) == before  # and be stable within a version
+
+
 def test_extraction_rejoins_currency_symbol_with_its_digits():
     """Root-cause fix for the citation-gate incident: store what the filing
     renders, not pypdf's table-flattening artifact."""
     from app.ingestion.pipeline import clean_extracted_text
 
     assert clean_extracted_text("Total net sales\n$\n391,035") == "Total net sales\n$391,035"
-    assert clean_extracted_text("Loss of (\n1,234 )") == "Loss of (1,234 )"
+    assert clean_extracted_text("Loss of (\n1,234 )") == "Loss of (1,234)"
 
 
 def test_extraction_preserves_boundaries_between_table_cells():

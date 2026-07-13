@@ -8,27 +8,32 @@ Lifecycle rules (verified by tests/test_ingestion_lifecycle.py):
 """
 
 import hashlib
-import re
 from pathlib import Path
 
 from app.db import get_pool
 from app.ingestion.chunking import split_into_chunks, summarize_document
 from app.ingestion.embed import embed_texts
+from app.text_norm import rejoin_symbol_digits
 
-# pypdf flattens table cells onto separate lines, so "$391,035" is extracted as
-# "$\n391,035". Rejoin the symbol with its digits at the source, so chunks store
-# what the filing actually renders (INCIDENTS.md: this artifact made the citation
-# gate reject correct answers). Scoped to symbol->digit only: whitespace between
-# two digit groups is a genuine cell boundary and must survive.
-_SYMBOL_DIGIT_SPLIT = re.compile(r"([$(])\s+(?=\d)")
+# Store what the filing renders, not pypdf's table-flattening artifact. Shares one
+# normalizer with the citation validator so the two can never drift (see text_norm).
+clean_extracted_text = rejoin_symbol_digits
 
-
-def clean_extracted_text(text: str) -> str:
-    return _SYMBOL_DIGIT_SPLIT.sub(r"\1", text)
+# Bump whenever parsing, cleaning, or chunking changes in a way that alters the
+# stored chunks. The skip-if-unchanged check compares the *file* hash, so without
+# this a pipeline fix silently leaves every already-ingested document sitting on
+# stale chunks — which is exactly what happened when clean_extracted_text landed
+# and re-running the ingest CLI was a no-op (INCIDENTS.md).
+INGEST_VERSION = 3
 
 
 def content_hash(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    """Fingerprint of the file *and* the pipeline that will process it, so a
+    pipeline change invalidates cached ingests instead of being ignored."""
+    digest = hashlib.sha256()
+    digest.update(data)
+    digest.update(f"|ingest-v{INGEST_VERSION}".encode())
+    return digest.hexdigest()
 
 
 def parse_pdf(path: Path) -> list[tuple[int, str]]:

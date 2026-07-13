@@ -81,6 +81,21 @@ def test_quote_validates_when_model_reproduces_the_raw_pdf_whitespace():
     validate_answer(_pdf_answer("Total net sales\n$\n391,035"), [PDF_CHUNK])
 
 
+def test_quote_validates_for_a_parenthesised_negative():
+    """10-Ks render losses/outflows as "$(4,638)"; pypdf splits it into
+    "$\n(\n4,638\n)". The model quotes what the filing shows."""
+    chunk = RetrievedChunk(
+        chunk_id=3, document_id=61, page=30,
+        text="Net loss\n$\n(\n4,638\n)\nfor the period",
+        context_summary="Apple Inc. 10-K", score=0.9,
+    )
+    answer = Answer(claims=[Claim(
+        text="The company reported a net loss of $(4,638).",
+        citations=[Citation(chunk_id=3, document_id=61, page=30, quote="Net loss $(4,638)")],
+    )])
+    validate_answer(answer, [chunk])
+
+
 def test_fabricated_number_not_present_in_chunk_is_blocked():
     with pytest.raises(CitationValidationError, match="not found verbatim"):
         validate_answer(_pdf_answer("Total net sales $999,999"), [PDF_CHUNK])
