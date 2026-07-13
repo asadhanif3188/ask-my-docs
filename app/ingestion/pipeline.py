@@ -8,11 +8,23 @@ Lifecycle rules (verified by tests/test_ingestion_lifecycle.py):
 """
 
 import hashlib
+import re
 from pathlib import Path
 
 from app.db import get_pool
 from app.ingestion.chunking import split_into_chunks, summarize_document
 from app.ingestion.embed import embed_texts
+
+# pypdf flattens table cells onto separate lines, so "$391,035" is extracted as
+# "$\n391,035". Rejoin the symbol with its digits at the source, so chunks store
+# what the filing actually renders (INCIDENTS.md: this artifact made the citation
+# gate reject correct answers). Scoped to symbol->digit only: whitespace between
+# two digit groups is a genuine cell boundary and must survive.
+_SYMBOL_DIGIT_SPLIT = re.compile(r"([$(])\s+(?=\d)")
+
+
+def clean_extracted_text(text: str) -> str:
+    return _SYMBOL_DIGIT_SPLIT.sub(r"\1", text)
 
 
 def content_hash(data: bytes) -> str:
@@ -26,7 +38,10 @@ def parse_pdf(path: Path) -> list[tuple[int, str]]:
 
     try:
         reader = PdfReader(str(path))
-        pages = [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
+        pages = [
+            (i + 1, clean_extracted_text(page.extract_text() or ""))
+            for i, page in enumerate(reader.pages)
+        ]
     except Exception as exc:
         raise ValueError(f"Unparseable PDF: {exc}") from exc
     if not any(text.strip() for _, text in pages):

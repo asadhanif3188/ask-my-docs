@@ -45,7 +45,13 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
 
     try:
         answer = await generate_answer(req.question, top_chunks, degraded=degraded)
-    except GenerationUnavailable:
+    except GenerationUnavailable as exc:
+        # Log the cause, always. This branch swallows everything from a dead API
+        # to a rejected citation, and twice already (INCIDENTS.md: fenced JSON,
+        # citation false-rejection) the silence here turned a one-line bug into a
+        # manual reproduction hunt — the user-facing detail says "unavailable"
+        # even when the real cause was our own validator.
+        logger.warning("generation unavailable for org=%s: %s", principal.org_id, exc)
         # Fallback contract: still return retrieved passages, never a 500.
         return QueryResponse(
             answer=None,

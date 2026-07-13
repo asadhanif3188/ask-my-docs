@@ -14,7 +14,8 @@ from app.models import RetrievedChunk
 def _get_model():
     from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(get_settings().reranker_model)
+    settings = get_settings()
+    return CrossEncoder(settings.reranker_model, cache_folder=settings.hf_cache_dir or None)
 
 
 def rerank(question: str, candidates: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:

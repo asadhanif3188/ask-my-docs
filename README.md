@@ -47,6 +47,10 @@ uv run uvicorn app.main:app --reload
 > **Windows note:** if `uv run pytest` fails with `Access is denied`, it's AV/Windows
 > blocking the shim exe — use `uv run python -m pytest` instead.
 
+> **Model weights:** the embedder (BGE-M3) and reranker together are ~5.4GB, downloaded
+> on first use. Set `HF_CACHE_DIR` in `.env` to keep them off the system drive
+> (e.g. `HF_CACHE_DIR=D:/hf-cache/huggingface/hub`); leave it blank for the HF default.
+
 Ingest documents:
 
 ```bash
@@ -143,9 +147,16 @@ plus one deliberately truncated PDF:
 Note the citation quote (`"Total net sales\n$\n391,035"`) is verbatim from the actual
 retrieved chunk text — `$391,035` million matches Apple's real reported FY2024 net
 sales, and `validate_answer()` accepted it because the normalized quote is found
-inside `chunk_id=514`'s text. See `INCIDENTS.md` for two real bugs this run surfaced
-(a markdown-fenced JSON response breaking citation validation, now fixed; and an
-open gap where a total DB outage isn't covered by the retrieval-degraded fallback).
+inside `chunk_id=514`'s text.
+
+Running the pipeline against real documents is what surfaced every bug in
+`INCIDENTS.md`, all three now fixed with regression tests:
+
+| Incident | Symptom | Root cause |
+|---|---|---|
+| Fenced JSON | Every answer came back `null` | Model wrapped its JSON in a ` ```json ` fence despite the system prompt; `json.loads()` choked |
+| Total DB outage | Plain-text `500`, breaking the JSON contract | `RetrievalDegraded` only guarded the dense branch — an outage kills the FTS branch it falls back *to* |
+| Citation false-rejection | Correct answers discarded ~half the time | PDF extraction put `$` on its own line, so the gate rejected the model's natural `$391,035` |
 
 ## Project layout
 

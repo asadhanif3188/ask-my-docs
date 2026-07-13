@@ -11,7 +11,10 @@ from app.config import get_settings
 def _get_model():
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer(get_settings().embedding_model)
+    settings = get_settings()
+    return SentenceTransformer(
+        settings.embedding_model, cache_folder=settings.hf_cache_dir or None
+    )
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:

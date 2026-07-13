@@ -141,14 +141,53 @@ so the substring check fails. Whether a citation validates therefore depends on
 whether the model happens to mirror an artifact of PDF text extraction — an
 effective coin-flip on numeric citations, which are exactly the citations that
 matter most for a financial-filing corpus.
-**Fix:** Not yet applied — this weakens the hallucination gate, the project's
-core security guarantee, so it needs an explicit decision rather than a quiet
-patch. Recommended: compare with *all* whitespace removed on both sides
-("verbatim up to whitespace"). That preserves the actual security property —
-the model still cannot introduce content absent from the chunk — while making
-validation independent of PDF extraction noise. Should be paired with logging
-the `GenerationUnavailable` reason in `query.py` so this class of failure is
-never again invisible in the logs.
-**Regression guard:** None yet — the fix should land with a test asserting that
-`$391,035` validates against a chunk containing `$\n391,035`.
-**Time to resolve:** N/A (documented, not fixed).
+**The fix that was wrong (worth recording).** First attempt made `_normalize()`
+drop whitespace entirely (`"".join(text.split())`), reasoning that the model
+still could not introduce characters absent from the chunk. That reasoning was
+wrong, and an adversarial security review — plus a direct check against the
+project's own test fixture — proved it. In a financial table the newline **is
+the cell delimiter**: pypdf flattens `391,035 | 2 | %` into
+`391,035\n2\n%`. Strip the whitespace and the cells fuse, so the gate began
+accepting quotes for figures that never existed:
+
+| Quote | Before | After blanket strip |
+|---|---|---|
+| `391,0352` (sales figure fused with an adjacent footnote marker) | blocked | **accepted** |
+| `391,035 2%` / `2%` (footnote spliced into another column's `%`, inventing a growth rate) | blocked | **accepted** |
+
+A model could cite `"391,035 2%"` — verbatim, in order, every character present —
+and assert *"net sales grew 2%"*, a number appearing nowhere in the filing. The
+relaxation broke the exact guarantee the service exists to provide, in exactly
+the domain it targets.
+
+**Fix (shipped).** Two changes, both scoped to symbol→digit and *never*
+digit→digit:
+1. `app/ingestion/pipeline.clean_extracted_text()` rejoins a currency/open-paren
+   symbol with the digits that follow it at extraction time, so chunks store what
+   the filing actually renders. Root cause, fixed where it is created.
+2. `validate._normalize()` collapses whitespace runs (as before) and additionally
+   folds whitespace between `$`/`(` and a following digit. Digit-to-digit
+   whitespace is preserved, so cell boundaries survive and every splice above
+   stays blocked.
+
+**Paired fix:** `app/api/query.py` now logs the `GenerationUnavailable` cause.
+That branch swallows everything from a dead upstream to a rejected citation while
+telling the user only "temporarily unavailable" — so a bug in *our own validator*
+was indistinguishable from an Anthropic outage. That silence is why this incident
+and the code-fence one both cost a manual reproduction hunt.
+**Regression guard:** `tests/test_citation_validation.py` — the original failure
+(`$391,035` vs `$\n391,035`), the inverse (model mirrors the artifact), and a
+parametrized `test_cross_cell_splice_is_blocked` pinning all four fabrications
+above as rejected. `tests/test_ingestion_lifecycle.py` pins that the extraction
+repair never fuses two figures. `test_generation_failure_reason_is_logged` pins
+the logging.
+**Verified live:** replayed the failing query against the real corpus 3× — 3/3
+returned a validated answer citing `Total net sales $391,035`, the exact quote
+form previously rejected. Before the fix the same query alternated between a
+correct answer and `answer: null` depending on how the model rendered whitespace.
+**Follow-up (open):** `validate_answer()` checks the *quote* but never
+`Claim.text` — a model can attach a perfectly verbatim quote to a claim sentence
+that misrepresents it. Pre-existing, not introduced here, but it means "the quote
+checks out" must not be read as "the sentence shown to the user is true."
+**Time to resolve:** ~40 minutes, nearly all of it spent getting the *scope* of
+the relaxation right. The one-line version was fast and wrong.

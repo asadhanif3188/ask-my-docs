@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
 
+    # Where the BGE model weights live (HF hub cache layout). Empty = HF default
+    # (~/.cache/huggingface/hub). Set it to keep multi-GB weights off the system
+    # drive; it is passed explicitly to the loaders rather than exported as
+    # HF_HOME, which huggingface_hub only reads at import time.
+    hf_cache_dir: str = ""
+
     reranker_model: str = "BAAI/bge-reranker-base"
     retrieve_top_k: int = 50
     rerank_top_k: int = 5

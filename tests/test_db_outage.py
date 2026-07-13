@@ -15,6 +15,7 @@ from app.api import health as health_api
 from app.api import query as query_api
 from app.auth import Principal, get_principal
 from app.main import app
+from app.models import RetrievedChunk
 from app.retrieval import hybrid
 from app.retrieval.hybrid import RetrievalUnavailable, hybrid_retrieve
 
@@ -81,6 +82,38 @@ async def test_healthz_returns_503_json_when_database_is_unreachable(client, mon
     assert response.status_code == 503
     assert response.headers["content-type"].startswith("application/json")
     assert response.json()["status"] == "unavailable"
+
+
+async def test_generation_failure_reason_is_logged(client, monkeypatch, caplog):
+    """The GenerationUnavailable branch tells the user only "unavailable". If it
+    also stays silent in the logs, a bug in our own validator is indistinguishable
+    from a dead upstream — which is exactly what happened twice (INCIDENTS.md)."""
+    from app.generation.generate import GenerationUnavailable
+
+    async def ok_retrieve(*args, **kwargs):
+        return [
+            RetrievedChunk(
+                chunk_id=1, document_id=1, page=1, text="some text",
+                context_summary="summary", score=0.9,
+            )
+        ]
+
+    async def dead_generate(*args, **kwargs):
+        raise GenerationUnavailable("Output failed citation validation: quote not found")
+
+    monkeypatch.setattr(query_api, "hybrid_retrieve", ok_retrieve)
+    monkeypatch.setattr(query_api, "rerank", lambda q, c, top_k: c)
+    monkeypatch.setattr(query_api, "generate_answer", dead_generate)
+
+    with caplog.at_level("WARNING", logger="app.api.query"):
+        async with client as c:
+            response = await c.post("/v1/query", json={"question": "What was the revenue?"})
+
+    assert response.status_code == 200  # fallback contract: sources still returned
+    assert response.json()["answer"] is None
+    assert any("citation validation" in r.getMessage() for r in caplog.records), (
+        "the real cause must reach the logs, not just a generic user-facing detail"
+    )
 
 
 async def test_unhandled_exception_returns_json_not_plain_text(client, monkeypatch):
