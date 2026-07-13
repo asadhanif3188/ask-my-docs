@@ -25,6 +25,12 @@ dev = [
     "ragas>=0.2",
     "datasets>=3.0",
 ]
+# scripts/fetch_corpus.py only: converts fetched SEC EDGAR HTML filings to PDF
+# so they're ingestible by the existing (PDF-only) pipeline.
+corpus = [
+    "beautifulsoup4>=4.12",
+    "reportlab>=4.0",
+]
 
 [tool.ruff]
 line-length = 100

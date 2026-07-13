@@ -30,6 +30,27 @@ class GenerationUnavailable(Exception):
     pass
 
 
+def _extract_json(text: str) -> str:
+    """Pull the JSON object out of a model response that may be wrapped in prose.
+
+    Despite SYSTEM_PROMPT saying "Return ONLY JSON", Claude wraps output in a
+    ```json fence — found via a real end-to-end query (INCIDENTS.md). A model
+    that ignores that instruction just as easily adds "Here is the JSON:" before
+    or "Let me know if..." after, so we scan for the first balanced {...} object
+    rather than anchoring on the fence markers themselves. Returns text unchanged
+    when no object is found, letting the caller's JSONDecodeError surface as-is.
+    """
+    start = text.find("{")
+    if start == -1:
+        return text
+    decoder = json.JSONDecoder()
+    try:
+        _, end = decoder.raw_decode(text, start)
+    except json.JSONDecodeError:
+        return text
+    return text[start:end]
+
+
 def _format_sources(chunks: list[RetrievedChunk]) -> str:
     # context_summary is LLM-generated from untrusted document text (see
     # app/ingestion/chunking.summarize_document) and is itself untrusted content
@@ -72,7 +93,7 @@ async def generate_answer(
         raise GenerationUnavailable(str(exc)) from exc
 
     try:
-        answer = Answer(**json.loads(raw), degraded=degraded)
+        answer = Answer(**json.loads(_extract_json(raw)), degraded=degraded)
         validate_answer(answer, chunks)
     except (json.JSONDecodeError, CitationValidationError, ValueError) as exc:
         # TODO(phase1): one repair round — feed the validation error back to the model

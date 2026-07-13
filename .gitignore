@@ -7,6 +7,7 @@ venv/
 .ruff_cache/
 data/
 models/
+corpus/
 *.gguf
 .coverage
 htmlcov/
