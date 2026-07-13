@@ -24,7 +24,7 @@ clean_extracted_text = clean_pdf_text
 # this a pipeline fix silently leaves every already-ingested document sitting on
 # stale chunks — which is exactly what happened when clean_extracted_text landed
 # and re-running the ingest CLI was a no-op (INCIDENTS.md).
-INGEST_VERSION = 4
+INGEST_VERSION = 5
 
 
 def content_hash(data: bytes) -> str:
