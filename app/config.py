@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 30
     org_daily_token_budget: int = 500_000
 
+    # Second faithfulness layer: an LLM judge checks each claim sentence against
+    # the evidence it cites (generation/entailment.py). Costs one cheap-model call
+    # per claim. The deterministic gates in generation/validate.py run regardless.
+    enable_entailment_check: bool = True
+
     eval_min_faithfulness: float = 0.85
     eval_min_context_recall: float = 0.80
 

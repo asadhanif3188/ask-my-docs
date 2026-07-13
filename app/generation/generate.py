@@ -95,6 +95,11 @@ async def generate_answer(
     try:
         answer = Answer(**json.loads(_extract_json(raw)), degraded=degraded)
         validate_answer(answer, chunks)
+        # Deterministic gates passed; now the semantic one. Imported here to keep
+        # the module import cycle-free (entailment imports CitationValidationError).
+        from app.generation.entailment import verify_entailment
+
+        await verify_entailment(answer, chunks)
     except (json.JSONDecodeError, CitationValidationError, ValueError) as exc:
         # TODO(phase1): one repair round — feed the validation error back to the model
         raise GenerationUnavailable(f"Output failed citation validation: {exc}") from exc

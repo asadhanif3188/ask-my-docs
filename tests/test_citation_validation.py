@@ -81,6 +81,25 @@ def test_quote_validates_when_model_reproduces_the_raw_pdf_whitespace():
     validate_answer(_pdf_answer("Total net sales\n$\n391,035"), [PDF_CHUNK])
 
 
+def test_quote_validates_against_a_chunk_still_holding_a_bullet_control_char():
+    """Chunks ingested before the artifact repair still carry \\x7f. The validator
+    must clean BEFORE collapsing whitespace — doing it the other way round turns
+    the control char into a space that nothing re-collapses, and a faithful quote
+    stops matching. That ordering bug was live; this pins it.
+    """
+    chunk = RetrievedChunk(
+        chunk_id=6, document_id=64, page=20,
+        text="may occur from, among other things:\n\x7f\nThe introduction of new features",
+        context_summary="Microsoft 10-K", score=0.9,
+    )
+    answer = Answer(claims=[Claim(
+        text="Reputational damage may follow the introduction of new features.",
+        citations=[Citation(chunk_id=6, document_id=64, page=20,
+                            quote="among other things: The introduction of new features")],
+    )])
+    validate_answer(answer, [chunk])
+
+
 def test_quote_validates_for_a_parenthesised_negative():
     """10-Ks render losses/outflows as "$(4,638)"; pypdf splits it into
     "$\n(\n4,638\n)". The model quotes what the filing shows."""
@@ -92,6 +111,70 @@ def test_quote_validates_for_a_parenthesised_negative():
     answer = Answer(claims=[Claim(
         text="The company reported a net loss of $(4,638).",
         citations=[Citation(chunk_id=3, document_id=61, page=30, quote="Net loss $(4,638)")],
+    )])
+    validate_answer(answer, [chunk])
+
+
+# --- Claim-text grounding -----------------------------------------------------
+#
+# The gate used to check only the *quote*. A model could therefore attach a
+# perfectly verbatim, correctly-attributed quote to a claim sentence that
+# misrepresented it — and the sentence is what the user actually reads. Every
+# significant figure asserted in claim.text must now appear in the cited chunks.
+
+REVENUE_CHUNK = RetrievedChunk(
+    chunk_id=4, document_id=61, page=14,
+    text="Total revenue for fiscal 2024 was $4.2 billion, up 12% year over year.",
+    context_summary="ACME Corp 10-K", score=0.9,
+)
+
+
+def _claim_citing_revenue(claim_text: str) -> Answer:
+    return Answer(claims=[Claim(
+        text=claim_text,
+        citations=[Citation(chunk_id=4, document_id=61, page=14,
+                            quote="Total revenue for fiscal 2024 was $4.2 billion")],
+    )])
+
+
+def test_claim_inventing_a_figure_is_blocked_despite_a_verbatim_quote():
+    # The exact hole found in review: the quote checks out perfectly, the
+    # sentence the user reads does not. "90%" appears nowhere in the source.
+    with pytest.raises(CitationValidationError, match="not supported"):
+        validate_answer(
+            _claim_citing_revenue("Revenue COLLAPSED by 90% to just $4.2 billion."),
+            [REVENUE_CHUNK],
+        )
+
+
+def test_faithful_claim_still_passes():
+    validate_answer(
+        _claim_citing_revenue("Total revenue for fiscal 2024 was $4.2 billion, up 12%."),
+        [REVENUE_CHUNK],
+    )
+
+
+@pytest.mark.parametrize(
+    "real_claim",
+    [
+        # Claims actually produced by the live pipeline — these must not regress.
+        "Apple's total net sales for fiscal year 2024 were $391,035 million.",
+        "Apple's total net revenue for fiscal year 2024 was $391,035 million.",
+    ],
+)
+def test_real_pipeline_claims_are_not_false_rejected(real_claim):
+    """Grounding must not repeat the false-rejection bug it sits next to: figures
+    the model legitimately restates from the chunk have to keep passing."""
+    chunk = RetrievedChunk(
+        chunk_id=5, document_id=61, page=54,
+        text="Total net sales\n$\n391,035\n2\n%\nnet sales by category for 2024, 2023 and 2022 "
+             "(dollars in millions)",
+        context_summary="Apple Inc. 10-K fiscal 2024", score=0.9,
+    )
+    answer = Answer(claims=[Claim(
+        text=real_claim,
+        citations=[Citation(chunk_id=5, document_id=61, page=54,
+                            quote="Total net sales $391,035")],
     )])
     validate_answer(answer, [chunk])
 

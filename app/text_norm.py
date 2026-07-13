@@ -20,16 +20,25 @@ is therefore anchored on a non-digit symbol.
 
 import re
 
+# pypdf renders symbol-font bullets as control characters — the corpus carries 800
+# DELs (\x7f) standing in for "•". The model omits them when quoting a bulleted
+# passage, and the gate then rejects a perfectly faithful quote. They become a
+# SPACE, never nothing: deleting them could fuse the tokens on either side, and
+# fusing tokens is precisely the mistake this module exists to not repeat.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_CONTROL_CHARS, " "),                    # bullet glyph artifacts -> space
     (re.compile(r"([$(])\s+(?=\d)"), r"\1"),   # "$ 391,035" / "( 1,333" -> "$391,035" / "(1,333"
     (re.compile(r"(\$)\s+(?=\()"), r"\1"),     # "$ (4,638"              -> "$(4,638"
     (re.compile(r"(?<=\d)\s+(?=\))"), ""),     # "4,638 )"               -> "4,638)"
 )
 
 
-def rejoin_symbol_digits(text: str) -> str:
-    """Fold whitespace between a currency/paren symbol and its number. Never
-    between two digit groups — see the module docstring."""
+def clean_pdf_text(text: str) -> str:
+    """Undo pypdf's extraction artifacts: drop glyph control characters, and fold
+    whitespace between a currency/paren symbol and its number. Never folds
+    whitespace between two digit groups — see the module docstring."""
     for pattern, replacement in _RULES:
         text = pattern.sub(replacement, text)
     return text

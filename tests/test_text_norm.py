@@ -7,7 +7,7 @@ fabricate figures the gate would then certify as verbatim (INCIDENTS.md).
 
 import pytest
 
-from app.text_norm import rejoin_symbol_digits
+from app.text_norm import clean_pdf_text
 
 
 @pytest.mark.parametrize(
@@ -24,7 +24,25 @@ from app.text_norm import rejoin_symbol_digits
     ],
 )
 def test_rejoins_symbols_with_their_numbers(extracted, expected):
-    assert rejoin_symbol_digits(extracted) == expected
+    assert clean_pdf_text(extracted) == expected
+
+
+def test_bullet_control_characters_become_a_space():
+    """pypdf renders symbol-font bullets as DEL (\\x7f) — 800 of them in the real
+    corpus. The model omits them when quoting a bulleted passage, so the gate
+    rejected a faithful quote until they were normalized away."""
+    extracted = "among other things:\n\x7f\nThe introduction of new features"
+    assert "\x7f" not in clean_pdf_text(extracted)
+    # Collapsed by the validator, the quote the model actually writes now matches.
+    assert " ".join(clean_pdf_text(extracted).split()) == (
+        "among other things: The introduction of new features"
+    )
+
+
+def test_control_characters_become_space_not_nothing():
+    """Deleting them could fuse the tokens either side — the exact mistake this
+    module exists to avoid. A space keeps figures apart."""
+    assert clean_pdf_text("391,035\x7f2") == "391,035 2"
 
 
 @pytest.mark.parametrize(
@@ -39,6 +57,6 @@ def test_rejoins_symbols_with_their_numbers(extracted, expected):
 def test_never_fuses_two_digit_groups(table_row):
     """The security invariant. Whatever else changes, digits must stay separated —
     otherwise "391,035" + footnote "2" becomes the fabricated figure "391,0352"."""
-    assert rejoin_symbol_digits(table_row) == table_row, (
+    assert clean_pdf_text(table_row) == table_row, (
         "the cell boundary between two digit groups must survive untouched"
     )

@@ -13,18 +13,18 @@ from pathlib import Path
 from app.db import get_pool
 from app.ingestion.chunking import split_into_chunks, summarize_document
 from app.ingestion.embed import embed_texts
-from app.text_norm import rejoin_symbol_digits
+from app.text_norm import clean_pdf_text
 
 # Store what the filing renders, not pypdf's table-flattening artifact. Shares one
 # normalizer with the citation validator so the two can never drift (see text_norm).
-clean_extracted_text = rejoin_symbol_digits
+clean_extracted_text = clean_pdf_text
 
 # Bump whenever parsing, cleaning, or chunking changes in a way that alters the
 # stored chunks. The skip-if-unchanged check compares the *file* hash, so without
 # this a pipeline fix silently leaves every already-ingested document sitting on
 # stale chunks — which is exactly what happened when clean_extracted_text landed
 # and re-running the ingest CLI was a no-op (INCIDENTS.md).
-INGEST_VERSION = 3
+INGEST_VERSION = 4
 
 
 def content_hash(data: bytes) -> str:

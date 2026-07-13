@@ -185,9 +185,96 @@ the logging.
 returned a validated answer citing `Total net sales $391,035`, the exact quote
 form previously rejected. Before the fix the same query alternated between a
 correct answer and `answer: null` depending on how the model rendered whitespace.
-**Follow-up (open):** `validate_answer()` checks the *quote* but never
-`Claim.text` — a model can attach a perfectly verbatim quote to a claim sentence
-that misrepresents it. Pre-existing, not introduced here, but it means "the quote
-checks out" must not be read as "the sentence shown to the user is true."
+**Follow-up (closed):** the `Claim.text` gap below.
 **Time to resolve:** ~40 minutes, nearly all of it spent getting the *scope* of
 the relaxation right. The one-line version was fast and wrong.
+
+---
+
+## Incident: the gate checked the quote, never the sentence the user reads
+
+**Date:** 2026-07-13
+**Symptom:** No user-visible failure — which is what makes it worth recording.
+Found during an adversarial review of the citation gate: `validate_answer()`
+verified `citation.quote` against the chunk, but never `Claim.text`. The claim
+sentence is free-form model output and is *the thing the user actually reads*.
+So this passed the gate cleanly:
+
+```
+claim.text  = "Revenue COLLAPSED by 90% to just $4.2 million, a catastrophic decline."
+citation.quote = "Total revenue for fiscal 2024 was $4.2 billion"   # verbatim, correctly cited
+```
+
+A flawless, correctly-attributed citation hung under a sentence that inverts its
+meaning, invents a 90% figure, and shifts the magnitude by three orders. "The
+quote checks out" was never the same as "the answer is true," and the product
+sold the former as the latter.
+**Detection:** Adversarial security review of the whitespace fix above, which
+asked what the gate does *not* check. Not a user report and not a test failure —
+no test existed that could fail.
+**Root cause:** The citation contract was designed around attribution
+(*does this quote exist in a retrieved chunk?*) and silently assumed faithfulness
+(*does the sentence follow from the quote?*) came with it. It does not.
+**Fix:** Two layers, because they fail differently.
+1. **Numeric grounding** (`validate.py`, deterministic, free): every significant
+   figure in `claim.text` must appear in the cited chunks (plus their context
+   summaries — a claim legitimately takes the fiscal year from the document, not
+   the table cell). For a financial corpus the invented *number* is the
+   catastrophic failure, so numbers get a hard check that cannot be talked out of
+   it. Single digits are excluded deliberately: they are everywhere in a filing,
+   and demanding they match would resurrect the false-rejection bug above.
+2. **Entailment** (`entailment.py`, LLM judge on the cheap tier): catches the
+   misstatements that invent no number at all — a reversed direction, a swapped
+   unit. Honest about what it is: an LLM checking an LLM, probabilistic, and the
+   weaker layer by design, which is why the deterministic gate runs first. It
+   **fails closed** — an unreachable or malformed judge means the claim is
+   *unverified*, and unverified financial claims are not served as fact.
+**Regression guard:** `tests/test_citation_validation.py` (invented figure
+blocked despite a verbatim quote; real pipeline claims still pass — the false
+rejection must not come back) and `tests/test_entailment.py` (reversed direction,
+swapped unit, fail-closed on a dead judge, fail-closed on malformed judge output).
+**Time to resolve:** ~1 hour.
+
+---
+
+## Incident: bullet glyphs arrive as control characters, and the validator normalized in the wrong order
+
+**Date:** 2026-07-13
+**Symptom:** With the faithfulness layers live, a real query — *"What are
+Microsoft's main risk factors?"* — returned `answer: null`. Two other queries
+(Apple, NVIDIA) were fine, so it was not a broad regression.
+**Detection:** The `GenerationUnavailable` logging added in the incident above
+paid for itself immediately: the log named the cause instead of staying silent.
+It was **not** the new entailment judge, as first suspected — it was the verbatim
+quote check. But the log truncated the quote to 80 characters, and the divergence
+was 75 characters in, so it still took a manual reproduction to see. The truncation
+is now removed; an error that hides the thing it is reporting is not an error message.
+**Root cause:** Two bugs, stacked.
+1. pypdf renders symbol-font bullets as **control characters** — the corpus holds
+   800 DELs (`\x7f`) standing in for "•". The model omits them when quoting a
+   bulleted passage, so a faithful quote failed the verbatim check. Same class as
+   the whitespace artifact above, third costume.
+2. Fixing (1) exposed a worse one: `_normalize()` **collapsed whitespace before
+   cleaning**. Cleaning turns `\x7f` into a space, so collapsing first left a
+   fresh run of spaces that nothing re-collapsed — chunk read `things:␣␣␣the`,
+   quote read `things:␣the`, no match. The unit test passed only because it
+   happened to clean-then-collapse, the correct order, while production did the
+   reverse. A test that exercises the right order while the code runs the wrong
+   one is worse than no test.
+**Fix:** Control characters become a **space** (never nothing — deleting them
+could fuse the tokens either side, the exact mistake this module exists to avoid),
+and `_normalize()` now cleans *then* collapses, the same order ingestion uses.
+Scope chosen from data, not intuition: a survey of the corpus found 800 `\x7f`
+and **zero** other bullet glyphs, so no speculative handling was added.
+**Regression guard:** `tests/test_text_norm.py` (control char to space; never
+fuses digit groups) and
+`test_quote_validates_against_a_chunk_still_holding_a_bullet_control_char`, which
+asserts against a chunk carrying a *raw* `\x7f` — pinning the ordering bug that
+the clean-input test could not catch.
+**Note for the next person:** re-ingesting is **not** required to fix this. The
+validator cleans both sides at comparison time, so a quote validates against a
+chunk whether or not that chunk has been reprocessed. Re-ingestion only buys
+cleaner embeddings and cleaner prompt text. This matters because chasing a
+re-ingest is what nearly hid bug (2): fresh data would have masked it while
+leaving it live for every chunk written by an older pipeline version.
+**Time to resolve:** ~30 minutes.
