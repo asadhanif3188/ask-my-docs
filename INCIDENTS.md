@@ -62,7 +62,7 @@ another pass to generalize the fix after review flagged the anchoring gap.
 
 ---
 
-## Incident (open, not yet fixed): total DB outage isn't covered by the "degraded" fallback contract
+## Incident: total DB outage isn't covered by the "degraded" fallback contract
 
 **Date:** 2026-07-13
 **Symptom:** Stopped the compose Postgres container mid-session, then sent a
@@ -91,13 +91,64 @@ path has no answer for — so it isn't "degraded," it's unhandled. Separately,
 there's no global FastAPI exception handler, so *any* unhandled exception
 anywhere in the app (not just this one) falls through to Starlette's generic
 plain-text 500 rather than a JSON error consistent with the rest of the API.
-**Fix:** Not applied — out of scope for today's "prove the pipeline
-end-to-end" pass, and the right fix needs a design decision the pipeline
-owner should make (e.g.: should a total DB outage return a distinct `503` with
-a structured JSON body? Is there anything sensible to serve when *neither*
-retrieval path works, or should this just fail fast and loudly?), not just a
-try/except slapped on. Recommended follow-up: add a global exception handler
-in `app/main.py` returning `{"detail": ...}` JSON for any unhandled exception,
-and decide whether a total-DB-down `/query` should be a distinct 503.
-**Regression guard:** None yet — candidate test once the fix design is decided.
+**Fix:** Three changes, driven by the decision that a total DB outage should be
+a **503, not a 200** — a 200 with `answer: null` would tell clients and
+monitoring "search worked, nothing matched", which is a lie that suppresses
+retries and alerting. (This is deliberately *unlike* the LLM-down case, which
+stays 200 because we still have real retrieved sources worth returning.)
+1. `RetrievalUnavailable` in `app/retrieval/hybrid.py`, raised when the FTS
+   branch — the thing `RetrievalDegraded` falls back *to* — is itself down.
+2. `app/api/query.py` catches it and returns `503 {"detail": "Search backend
+   unavailable, please retry"}`. The exception carries the DSN, so the client
+   detail is deliberately generic; the real cause is logged server-side.
+3. `app/main.py` gained a global `Exception` handler so *no* route can fall
+   through to Starlette's plain-text 500 and break the API's JSON contract;
+   `/healthz` now returns `503 {"status": "unavailable"}` so orchestrators pull
+   the pod from rotation instead of seeing an opaque 500.
+**Regression guard:** `tests/test_db_outage.py` — 5 tests covering the
+`RetrievalUnavailable` raise, the 503 JSON body, that the body leaks neither DSN
+nor traceback, the `/healthz` 503, and that an unhandled exception still yields
+JSON rather than plain text.
+**Verified live:** stopped the compose Postgres and replayed the same request —
+`/healthz` → `503 {"status":"unavailable"}`, `/query` → `503 {"detail":"Search
+backend unavailable, please retry"}` (both `application/json`, previously
+plain-text 500). Restarted Postgres: both recovered with no API restart.
+**Time to resolve:** ~20 minutes.
+
+---
+
+## Incident: citation gate false-rejects correct answers over PDF whitespace artifacts
+
+**Date:** 2026-07-13
+**Symptom:** After the DB-outage fix, replaying the *same* Apple revenue query
+that had previously succeeded returned `200` with `answer: null` and
+`"detail": "Sources found but answer generation is temporarily unavailable"` —
+despite retrieval returning the same five correct chunks. The answer was not
+"unavailable" at all: the model produced a correct, correctly-cited answer and
+the hallucination gate threw it away.
+**Detection:** The server log said nothing, because `app/api/query.py` catches
+`GenerationUnavailable` and returns the fallback *without logging the reason* —
+the same blind spot that made the earlier code-fence incident slow to diagnose.
+Reproducing the call directly surfaced it:
+`CitationValidationError: Quote not found verbatim in chunk 514: 'Total net sales $391,035'`.
+**Root cause:** `validate._normalize()` collapses whitespace *runs* into a single
+space but does not remove whitespace. The chunk, as extracted from the PDF, reads
+`Total net sales\n$\n391,035` (the `$` lands on its own line) and normalizes to
+`total net sales $ 391,035` — with a space between `$` and the number. The model
+wrote the same span naturally as `$391,035`, which normalizes to
+`total net sales $391,035`. Identical content, one whitespace character apart,
+so the substring check fails. Whether a citation validates therefore depends on
+whether the model happens to mirror an artifact of PDF text extraction — an
+effective coin-flip on numeric citations, which are exactly the citations that
+matter most for a financial-filing corpus.
+**Fix:** Not yet applied — this weakens the hallucination gate, the project's
+core security guarantee, so it needs an explicit decision rather than a quiet
+patch. Recommended: compare with *all* whitespace removed on both sides
+("verbatim up to whitespace"). That preserves the actual security property —
+the model still cannot introduce content absent from the chunk — while making
+validation independent of PDF extraction noise. Should be paired with logging
+the `GenerationUnavailable` reason in `query.py` so this class of failure is
+never again invisible in the logs.
+**Regression guard:** None yet — the fix should land with a test asserting that
+`$391,035` validates against a chunk containing `$\n391,035`.
 **Time to resolve:** N/A (documented, not fixed).

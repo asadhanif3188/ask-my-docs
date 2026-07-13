@@ -13,8 +13,17 @@ RRF_K = 60  # standard smoothing constant
 
 
 class RetrievalDegraded(Exception):
+    """Partial failure: the dense branch is down but FTS still answers, so the
+    API can serve a flagged, degraded response."""
+
     def __init__(self, fallback_results: list[RetrievedChunk]):
         self.fallback_results = fallback_results
+
+
+class RetrievalUnavailable(Exception):
+    """Total failure: FTS — the fallback path itself — is down, which in practice
+    means Postgres is unreachable. There is nothing to degrade to, so the API
+    must fail honestly (503) rather than pretend no documents matched."""
 
 
 def rrf_fuse(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
@@ -76,7 +85,13 @@ async def _dense_search(org_id: int, question: str, limit: int) -> list[Retrieve
 
 
 async def hybrid_retrieve(org_id: int, question: str, top_k: int) -> list[RetrievedChunk]:
-    fts_results = await _fts_search(org_id, question, top_k)
+    try:
+        fts_results = await _fts_search(org_id, question, top_k)
+    except Exception as exc:
+        # FTS is what RetrievalDegraded falls back *to*, so if it fails there is
+        # no degraded answer to serve — Postgres itself is almost certainly down.
+        raise RetrievalUnavailable(str(exc)) from exc
+
     try:
         dense_results = await _dense_search(org_id, question, top_k)
     except Exception:

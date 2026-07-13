@@ -1,11 +1,15 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth import Principal, get_principal
 from app.config import get_settings
 from app.generation.generate import GenerationUnavailable, generate_answer
 from app.models import QueryRequest, QueryResponse
-from app.retrieval.hybrid import RetrievalDegraded, hybrid_retrieve
+from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
 from app.retrieval.rerank import rerank
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -24,6 +28,15 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
     except RetrievalDegraded as exc:
         candidates = exc.fallback_results  # FTS-only fallback
         degraded = True
+    except RetrievalUnavailable as exc:
+        # Search backend is down; there is no degraded answer to serve. Fail
+        # honestly with a retryable 503 rather than a 200 that would look like
+        # "no documents matched". Detail is deliberately generic — exc carries
+        # the DSN and must not reach the client.
+        logger.error("retrieval unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Search backend unavailable, please retry"
+        ) from exc
 
     if not candidates:
         return QueryResponse(answer=None, sources=[], detail="No relevant documents found")
