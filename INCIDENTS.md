@@ -305,3 +305,60 @@ cleaner embeddings and cleaner prompt text. This matters because chasing a
 re-ingest is what nearly hid bug (2): fresh data would have masked it while
 leaving it live for every chunk written by an older pipeline version.
 **Time to resolve:** ~30 minutes.
+
+---
+
+## Incident (OPEN): XBRL tag soup is embedded and indexed as retrievable content
+
+**Date:** 2026-07-14
+**Status:** OPEN — found while building the golden set; not yet fixed. Recorded now
+so it is not rediscovered from scratch later.
+**Symptom:** No user-visible failure yet. Sampling chunks to draft golden-set
+questions, the first "long" chunk pulled from `NVDA_10K_2025-02-26.pdf` was not
+prose but the filing's embedded XBRL metadata:
+
+```
+nvda-20230129 0001045810 2023 FY false P3Y P4Y P5Y
+http://fasb.org/us-gaap/2022#AccruedLiabilitiesCurrent
+nvda:AartiShahSeptember27202410b51TradingArrangementMember
+```
+
+**Detection:** A prose filter written to *sample* chunks (not to test anything)
+rejected far more than expected. Measuring the corpus directly:
+**379 of 1,973 chunks (19%) are XBRL tag soup**, 376 of them almost entirely so —
+MSFT 185, NVDA 112, AAPL 82. Every one carries an embedding and a `tsv` entry, so
+each is a live candidate in both retrieval branches.
+
+Note the number that is *not* the story: ~44% of chunks fail a strict prose test,
+but most of that is legitimate flattened financial tables (the revenue rows the
+factual eval cases depend on). Conflating the two would have condemned the tables
+along with the junk. The junk is the 19%.
+
+**Root cause (hypothesised, unconfirmed):** `pdfplumber` text extraction returns the
+inline XBRL / iXBRL fact tags that modern SEC filings embed in the document, and
+the chunker treats that output as ordinary text. There is no content filter between
+extraction and chunking — `pipeline.py` chunks whatever comes back.
+
+**Impact:** These chunks cannot answer any question, but they can still be *retrieved*.
+They are dense number-and-identifier strings, which is exactly the shape that scores
+spuriously on FTS for queries containing dates, CIKs, or alphanumeric identifiers —
+the same lexical branch the `kind: "factual"` eval cases are meant to exercise. Cost
+is paid too: 379 needless embeddings per full ingest, and prompt tokens whenever one
+survives reranking. **The hallucination gate is not at risk** — a model cannot
+fabricate a citable verbatim quote out of tag soup, and `validate.py` would reject it
+— so this degrades retrieval quality and cost, not correctness.
+
+**Fix:** not yet written. Likely a content filter at ingest (drop chunks whose
+tag-token density exceeds a threshold), which would require a re-ingest to take
+effect for existing rows — the one thing this project has already learned to be
+expensive and to treat with suspicion (see the incident above: a re-ingest almost
+masked a live bug).
+
+**Regression guard:** none yet. When fixed, the guard must pin a *real* tag-soup
+chunk (chunk 8065 is a good specimen) rather than a synthetic string, for the same
+reason `test_quote_validates_against_a_chunk_still_holding_a_bullet_control_char`
+had to: clean synthetic input is what let the original bug hide.
+
+**Next step:** measure whether these chunks actually surface in the top-k for the
+50 golden questions before spending a re-ingest on them. If they never rank, this
+is a cost bug, not a quality bug, and the priority changes accordingly.
