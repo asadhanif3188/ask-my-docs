@@ -362,3 +362,25 @@ had to: clean synthetic input is what let the original bug hide.
 **Next step:** measure whether these chunks actually surface in the top-k for the
 50 golden questions before spending a re-ingest on them. If they never rank, this
 is a cost bug, not a quality bug, and the priority changes accordingly.
+
+### Update 2026-07-14 — measured. They rank, and it is a quality bug.
+
+The first full eval run (`--dump`) gave the top-5 chunks actually shown to the model
+for all 50 golden questions. Against that:
+
+- **54 of 250 context slots (21.6%) were filled by tag-soup chunks.**
+- **19 of 50 questions** had at least one in their top 5.
+- **6 of the 8 questions the model refused for lack of context** had tag soup
+  occupying slots — including g024, g026, g034, g035, g044, g045.
+
+So the guess above was wrong, and it is worth recording *that* rather than quietly
+correcting it: this is not a cost bug. One in five of the model's context slots is
+unreadable metadata, and the questions where it crowds in are disproportionately the
+ones the system then failed to answer. Correlation, not proof of causation — the
+semantic cases are hard for the dense branch independently, and both effects land on
+the same questions. Disentangling them is the next measurement, not the next guess:
+re-run recall@5 with tag-soup chunks filtered out at query time (no re-ingest needed
+for the experiment) and see how much of the semantic recall hole closes.
+
+Priority accordingly moves up: this now plausibly contributes to the 47% semantic
+recall@5 recorded as the baseline in METRICS.md.

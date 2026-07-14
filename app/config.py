@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     eval_min_faithfulness: float = 0.85
     eval_min_context_recall: float = 0.80
 
+    # The tenant the evals query against. Ingestion is keyed by (org_id,
+    # source_uri), so naming a *new* org here re-embeds the whole corpus for it.
+    # Point it at an org that already holds the corpus and seeding is free.
+    eval_org_name: str = "eval"
+    # Ragas judge. Empty falls back to llm_model. Kept separate because the judge
+    # and the system under test should be independently swappable — and because
+    # scoring 50 cases x 3 metrics is where eval cost actually lives.
+    eval_judge_model: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

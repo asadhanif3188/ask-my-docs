@@ -24,6 +24,16 @@ dev = [
     "ruff>=0.6",
     "ragas>=0.2",
     "datasets>=3.0",
+    # Ragas' judge. It defaults to OpenAI for both LLM and embeddings; we have no
+    # OpenAI key and no reason to add a vendor, so the judge is Claude and the
+    # embeddings are the local BGE-M3 (evals/run_evals.py::_judge).
+    "langchain-anthropic>=0.3",
+    # ragas 0.4.3 declares `langchain-community` with no upper bound, and imports
+    # langchain_community.chat_models.vertexai *unguarded* at module load. That
+    # module is gone in langchain-community 0.4.x, so an unpinned resolve installs
+    # a ragas that cannot be imported at all. Nothing in app/ uses langchain — it
+    # is purely ragas' transitive dep — so pinning it here is free.
+    "langchain-community<0.4",
 ]
 # scripts/fetch_corpus.py only: converts fetched SEC EDGAR HTML filings to PDF
 # so they're ingestible by the existing (PDF-only) pipeline.
