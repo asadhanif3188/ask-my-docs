@@ -35,7 +35,7 @@ def rrf_fuse(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
     return scores
 
 
-async def _fts_search(org_id: int, question: str, limit: int) -> list[RetrievedChunk]:
+async def _fts_search(org_id: int, query: str, limit: int) -> list[RetrievedChunk]:
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -47,7 +47,7 @@ async def _fts_search(org_id: int, question: str, limit: int) -> list[RetrievedC
         LIMIT $3
         """,
         org_id,
-        question,
+        query,
         limit,
     )
     return [
@@ -59,8 +59,8 @@ async def _fts_search(org_id: int, question: str, limit: int) -> list[RetrievedC
     ]
 
 
-async def _dense_search(org_id: int, question: str, limit: int) -> list[RetrievedChunk]:
-    vector = await embed_query(question)
+async def _dense_search(org_id: int, query: str, limit: int) -> list[RetrievedChunk]:
+    vector = await embed_query(query)
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -84,16 +84,18 @@ async def _dense_search(org_id: int, question: str, limit: int) -> list[Retrieve
     ]
 
 
-async def hybrid_retrieve(org_id: int, question: str, top_k: int) -> list[RetrievedChunk]:
+async def hybrid_retrieve(
+    org_id: int, dense_query: str, fts_query: str, top_k: int
+) -> list[RetrievedChunk]:
     try:
-        fts_results = await _fts_search(org_id, question, top_k)
+        fts_results = await _fts_search(org_id, fts_query, top_k)
     except Exception as exc:
         # FTS is what RetrievalDegraded falls back *to*, so if it fails there is
         # no degraded answer to serve — Postgres itself is almost certainly down.
         raise RetrievalUnavailable(str(exc)) from exc
 
     try:
-        dense_results = await _dense_search(org_id, question, top_k)
+        dense_results = await _dense_search(org_id, dense_query, top_k)
     except Exception:
         raise RetrievalDegraded(fallback_results=fts_results[:top_k])
 

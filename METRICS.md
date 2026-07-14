@@ -176,6 +176,53 @@ the semantic cases are independently hard for the dense branch, and both effects
 on the same questions. The disentangling experiment (filter tag soup at query time,
 re-measure recall@5) needs no re-ingest and should run before any ingestion change.
 
+## Query rewrite ablation (the documented cut)
+
+Phase 1's query path specifies rewrite -> hybrid retrieve -> RRF -> rerank ->
+generate. Implemented in `app/retrieval/rewrite.py`: one `summary_model` call per
+query, strict JSON out, producing a DENSE form (pronouns resolved, abbreviations
+expanded, synonyms added) and an FTS form (filler stripped, identifiers — tickers,
+numbers, dates — preserved verbatim). Any failure falls back to the raw question for
+both branches; wired behind `settings.enable_rewrite` specifically so this
+measurement is a config flip, not a code change.
+
+Measured on the same golden set and harness as the recall table above
+(`evals/run_evals.py --dump`), rewrite ON vs OFF, n=45 answerable cases:
+
+| Kind | OFF (baseline) | ON (rewrite) | Delta |
+|---|---|---|---|
+| factual (FTS-friendly) | 20/20 = 100% | 19/20 = 95% | **-5pp** |
+| semantic (paraphrase, dense branch) | 7/15 = 47% | 7/15 = 47% | **0** |
+| synthesis (2 chunks needed) | 7/10 = 70% | 7/10 = 70% | **0** |
+| **Total recall@5 (any expected chunk)** | 34/45 = 75.6% | 33/45 = 73.3% | **-2.2pp** |
+
+Added latency — standalone `rewrite_query()` timing over the same 45 questions,
+concurrency=4, zero fallbacks (no API errors): **p50 2,192ms, mean 3,087ms, p95
+6,069ms** per query, on top of retrieval + rerank + generation.
+
+**Verdict: cut — no measurable gain — flag left in place (default off), documented.**
+
+The semantic/paraphrase cases were the entire hypothesis for this feature — "resolve
+pronouns, expand abbreviations, add synonyms" should help exactly the dense-branch
+cases BGE-M3 struggles with — and recall@5 there did not move: 7/15 both ways, the
+same seven case IDs answered either way. Synthesis was likewise unchanged. Whatever
+is limiting the dense branch on paraphrased questions, it is not query phrasing that
+a rewrite step can fix.
+
+Worse, rewrite cost a factual case it should never have touched: g019 ("expiration
+dates of NVIDIA's currently issued patents") lost its one expected chunk (id 8428)
+from the top 5 under rewrite — the rewritten FTS form pulled in five unrelated
+chunks instead of the exact match the raw question found. The prompt explicitly
+instructs the FTS form to preserve identifiers verbatim; this case shows that
+instruction alone doesn't prevent an exact-match regression, only a *literal*
+find-and-replace of a named identifier — the phrasing around it can still shift
+which chunks a `websearch_to_tsquery` match ranks first.
+
+`enable_rewrite` stays wired and defaults to **off** by this finding, so a future
+retrieval change (e.g. a stronger dense model, or a rewrite prompt scoped to only
+the semantic-branch failure mode) can be re-measured against it without
+re-implementing the feature.
+
 ## Graph RAG experiment (the documented cut)
 
 _2-day Neo4j spike: relational-question subset of the golden set, vector-only vs

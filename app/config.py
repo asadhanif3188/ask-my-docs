@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # per claim. The deterministic gates in generation/validate.py run regardless.
     enable_entailment_check: bool = True
 
+    # Query rewrite (retrieval/rewrite.py): one cheap-model call per query that
+    # expands the dense-branch form and strips filler from the FTS-branch form
+    # before hybrid_retrieve. Measured and CUT (METRICS.md, "Query rewrite
+    # ablation"): 0 recall@5 gain on the semantic/synthesis cases it targeted,
+    # a regression on one factual case, +~2.2s p50 added latency. Default off;
+    # flag stays wired so a future retrieval change can be re-measured against it.
+    enable_rewrite: bool = False
+
     eval_min_faithfulness: float = 0.85
     eval_min_context_recall: float = 0.80
 

@@ -18,6 +18,7 @@ from app.main import app
 from app.models import RetrievedChunk
 from app.retrieval import hybrid
 from app.retrieval.hybrid import RetrievalUnavailable, hybrid_retrieve
+from app.retrieval.rewrite import RewrittenQuery
 
 DB_DOWN = ConnectionRefusedError("[WinError 1225] The remote computer refused the network connection")
 
@@ -30,6 +31,22 @@ def client():
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def _stub_rewrite(monkeypatch):
+    """These tests are about the retrieval/generation failure paths, not rewrite.
+
+    Without this, every client.post("/v1/query") below reaches the real
+    rewrite_query() (enable_rewrite defaults on) and attempts a live Anthropic
+    call before the mocked hybrid_retrieve is ever hit — see INCIDENTS.md on
+    tests that silently bill (or hang on) the real API.
+    """
+
+    async def no_op_rewrite(question: str) -> RewrittenQuery:
+        return RewrittenQuery(dense=question, fts=question)
+
+    monkeypatch.setattr(query_api, "rewrite_query", no_op_rewrite)
+
+
 async def test_hybrid_retrieve_raises_unavailable_when_fts_branch_is_down(monkeypatch):
     """FTS is the fallback path itself — if it dies, degrading is not an option."""
 
@@ -39,7 +56,7 @@ async def test_hybrid_retrieve_raises_unavailable_when_fts_branch_is_down(monkey
     monkeypatch.setattr(hybrid, "_fts_search", dead_fts)
 
     with pytest.raises(RetrievalUnavailable):
-        await hybrid_retrieve(org_id=1, question="anything", top_k=5)
+        await hybrid_retrieve(org_id=1, dense_query="anything", fts_query="anything", top_k=5)
 
 
 async def test_query_returns_503_json_when_database_is_unreachable(client, monkeypatch):

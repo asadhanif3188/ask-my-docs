@@ -8,6 +8,7 @@ from app.generation.generate import GenerationUnavailable, generate_answer
 from app.models import QueryRequest, QueryResponse
 from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
 from app.retrieval.rerank import rerank
+from app.retrieval.rewrite import rewrite_query
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,15 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
 
     # TODO(phase2): rate limit per user + org daily token budget check (token_usage table)
 
+    rewritten = await rewrite_query(req.question)
+
     degraded = False
     try:
         candidates = await hybrid_retrieve(
-            org_id=principal.org_id, question=req.question, top_k=settings.retrieve_top_k
+            org_id=principal.org_id,
+            dense_query=rewritten.dense,
+            fts_query=rewritten.fts,
+            top_k=settings.retrieve_top_k,
         )
     except RetrievalDegraded as exc:
         candidates = exc.fallback_results  # FTS-only fallback

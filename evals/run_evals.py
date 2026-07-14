@@ -45,6 +45,7 @@ from app.db import close_pool
 from app.generation.generate import GenerationUnavailable, generate_answer
 from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
 from app.retrieval.rerank import rerank
+from app.retrieval.rewrite import rewrite_query
 from evals.seed_eval_org import seed_eval_org
 
 GOLDEN_SET = Path(__file__).parent / "golden_set.jsonl"
@@ -89,9 +90,14 @@ async def run_case(case: dict, org_id: int) -> dict:
         "detail": "",
     }
 
+    rewritten = await rewrite_query(question)
+
     try:
         candidates = await hybrid_retrieve(
-            org_id=org_id, question=question, top_k=settings.retrieve_top_k
+            org_id=org_id,
+            dense_query=rewritten.dense,
+            fts_query=rewritten.fts,
+            top_k=settings.retrieve_top_k,
         )
     except RetrievalDegraded as exc:
         candidates = exc.fallback_results  # FTS-only, same contract as the API
