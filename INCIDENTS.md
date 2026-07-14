@@ -384,3 +384,60 @@ for the experiment) and see how much of the semantic recall hole closes.
 
 Priority accordingly moves up: this now plausibly contributes to the 47% semantic
 recall@5 recorded as the baseline in METRICS.md.
+
+---
+
+## Incident: unit tests passed locally by calling the real API; CI had no key and failed
+
+**Date:** 2026-07-14
+**Symptom:** `lint-test` failed on CI with 7 failures in `tests/test_generate.py`, all
+identical:
+
+```
+GenerationUnavailable: Output failed citation validation: entailment check
+unavailable: "Could not resolve authentication method. Expected one of api_key,
+auth_token, or credentials to be set..."
+```
+
+The same 7 tests passed locally, on the same commit. A test that passes on one
+machine and fails on another is not a flaky test — it is a test measuring the
+machine.
+
+**Detection:** CI. Reproduced locally in one command by removing the thing CI does
+not have: `LLM_API_KEY="" uv run python -m pytest tests/test_generate.py` → the same
+7 failures. That is the whole diagnosis; the traceback's `_validate_headers` frame
+named the missing key, and CI's environment named who was missing it.
+
+**Root cause:** `generate_answer()` makes **two** LLM calls, not one. It calls the
+generator, then — after the deterministic gates pass — the entailment judge, which
+constructs its *own* `AsyncAnthropic` client inside `app/generation/entailment.py`.
+`test_generate.py` patched `generate.AsyncAnthropic` only. The judge's client was
+never mocked, so it reached the network:
+
+- **locally**, `.env` supplies a real key, so the judge answered and the test passed
+  — while quietly billing the Anthropic API on every `pytest` run;
+- **in CI**, there is no key, so the judge raised, failed closed (as designed), and
+  `verify_entailment` correctly refused to certify the answer — failing the test.
+
+The entailment layer behaved *exactly* as specified in both environments. The test
+was wrong, not the code. Note the direction of the failure: fail-closed turned a
+missing credential into a refusal rather than an unverified answer, which is the
+correct trade and the reason this surfaced as a red CI job instead of a silent hole
+in the faithfulness gate.
+
+**The finding worth keeping:** the local suite was never green *on its own merits* —
+it was green because it had a credit card. The tell was in plain sight and unread:
+the suite took **22.6s locally vs 3.0s after the fix** — ~20 seconds of real network
+round-trips hiding inside "unit" tests.
+
+**Fix:** stub the judge's client in `test_generate.py` the way `test_entailment.py`
+already stubbed it ("Fully mocked: no API key needed" — the correct pattern existed
+one file away). `verify_entailment`'s real behaviour stays covered, mocked, there.
+
+**Regression guard:** `tests/test_generate.py :: test_no_llm_call_escapes_the_mocks`
+— sets `LLM_API_KEY=""` and asserts `generate_answer` still succeeds. This pins the
+*bug*, not the symptom: if a future change adds a third LLM call and forgets to mock
+it, the test fails on every machine instead of only on the one without a key. The
+autouse fixture alone would not have caught that; it would just have been extended.
+
+**Time to resolve:** ~15 minutes.
