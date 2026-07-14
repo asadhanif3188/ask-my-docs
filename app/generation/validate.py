@@ -23,7 +23,17 @@ from app.text_norm import clean_pdf_text
 
 
 class CitationValidationError(Exception):
-    pass
+    """A rejected answer, tagged with WHY.
+
+    `category` is a stable identifier, set at the raise site, never parsed back out
+    of the message. generate.py logs it and Project 3 turns it into schema-failure
+    telemetry — both of which break the moment a category is a grep over English
+    prose that someone later rewords.
+    """
+
+    def __init__(self, message: str, category: str = "citation_invalid"):
+        super().__init__(message)
+        self.category = category
 
 
 _NUMBER = re.compile(r"\d[\d,.]*")
@@ -71,14 +81,17 @@ def validate_answer(answer: Answer, retrieved: list[RetrievedChunk]) -> None:
 
     for claim in answer.claims:
         if not claim.citations:
-            raise CitationValidationError(f"Uncited claim: {claim.text[:80]!r}")
+            raise CitationValidationError(
+                f"Uncited claim: {claim.text[:80]!r}", category="uncited_claim"
+            )
 
         cited_chunks = []
         for citation in claim.citations:
             chunk = chunks_by_id.get(citation.chunk_id)
             if chunk is None:
                 raise CitationValidationError(
-                    f"Citation references chunk_id={citation.chunk_id} that was not retrieved"
+                    f"Citation references chunk_id={citation.chunk_id} that was not retrieved",
+                    category="unknown_chunk_id",
                 )
             if _normalize(citation.quote) not in _normalize(chunk.text):
                 # Report the whole quote, not a prefix. An 80-char truncation hid
@@ -86,7 +99,8 @@ def validate_answer(answer: Answer, retrieved: list[RetrievedChunk]) -> None:
                 # and cost a manual reproduction to find — see INCIDENTS.md.
                 raise CitationValidationError(
                     f"Quote not found verbatim in chunk {citation.chunk_id}: "
-                    f"{citation.quote!r}"
+                    f"{citation.quote!r}",
+                    category="non_verbatim_quote",
                 )
             cited_chunks.append(chunk)
 
@@ -102,5 +116,6 @@ def validate_answer(answer: Answer, retrieved: list[RetrievedChunk]) -> None:
             if not _is_grounded(_normalize(number), evidence):
                 raise CitationValidationError(
                     f"Claim asserts {number!r}, which is not supported by its cited "
-                    f"chunks: {claim.text[:80]!r}"
+                    f"chunks: {claim.text[:80]!r}",
+                    category="ungrounded_number",
                 )

@@ -441,3 +441,50 @@ it, the test fails on every machine instead of only on the one without a key. Th
 autouse fixture alone would not have caught that; it would just have been extended.
 
 **Time to resolve:** ~15 minutes.
+
+---
+
+## Incident: the eval runner loaded three copies of every model and SIGSEGV'd
+
+**Date:** 2026-07-14
+**Symptom:** `uv run python -m evals.run_evals` died with `Segmentation fault`
+(exit 139). No traceback — the process was gone, not raised. It had succeeded on the
+same machine hours earlier, which made it look intermittent.
+**Detection:** The pipe hid it first: the shell reported exit 0 because that was
+`tail`'s status, not Python's. Re-running without the pipe surfaced `EXIT=139`. The
+log then showed the crash happened during **model loading**, before a single case ran
+— and that the reranker's weights were being loaded **three times**, once per worker.
+**Root cause:** `@lru_cache` memoises a *result*; it does not serialise the *call*.
+`rerank()` runs via `asyncio.to_thread`, so N worker threads hit the cold cache
+simultaneously, all missed, and each constructed its own model. Three copies of
+BGE-M3 (~2.3GB) plus three cross-encoders on a 15.7GB laptop exhausted RAM, and torch
+on Windows dies from that with a SIGSEGV rather than a clean `MemoryError`.
+
+Production never hit this: `app/api/query.py` calls `rerank()` on the event loop, one
+call at a time. The eval runner was the first code to fan the loaders out across
+threads — the harness built to measure the system was the only thing that could break
+this way.
+
+**The wrong fix, recorded because it was nearly shipped:** the first response was to
+lower `--concurrency` from 4 to 3, on the evidence that a 4-wide run crashed and a
+3-wide run had passed. That is tuning a knob at a symptom. The very next 3-wide run
+segfaulted too, which was the useful data point: concurrency was correlated with the
+crash because it controlled *how many copies loaded*, not because 4 was one too many.
+
+**Fix:** a `threading.Lock` around the loader in `app/ingestion/embed.py` and
+`app/retrieval/rerank.py` (first caller loads, the rest wait and reuse), plus
+`warm_models()` called once before the fan-out in `evals/run_evals.py` so the load is
+paid serially instead of under contention. Confirmed by the log: model-load events
+went 3 → 1 per model, and the full 50-case run completed.
+
+**Regression guard:** `tests/test_model_loading.py` — eight threads released
+simultaneously on a cold cache via a `threading.Barrier`, asserting the underlying
+constructor ran exactly **once**. The fake loader deliberately sleeps: without that
+latency the threads serialise by luck and the test passes on the broken code.
+
+**Note for the next person:** free RAM was also genuinely low (~2.5GB) from orphaned
+python processes left by the earlier crashes, which is why this looked intermittent.
+The single-copy fix removes the 3x multiplier; it does not make the models small. A
+machine that cannot hold one embedder plus one reranker (~3.4GB) will still fail.
+
+**Time to resolve:** ~40 minutes, most of it spent on the concurrency red herring.

@@ -61,9 +61,47 @@ touching anything.
 | Date | Golden set size | Faithfulness | Context recall | Answer relevance |
 |---|---|---|---|---|
 | 2026-07-14 (BASELINE) | 50 | 0.53 | 0.53 | 0.47 |
+| 2026-07-14 (+ repair round) | 50 | **0.65** | **0.67** | **0.59** |
 
-Gate thresholds are 0.85 / 0.80, so this run **fails (exit 1)**. That is the
-expected first result and nothing was tuned in response to it.
+Gate thresholds are 0.85 / 0.80, so both runs **fail (exit 1)**. That was the
+expected first result, and nothing was tuned in response to the baseline.
+
+### Delta: the one-shot repair round (Prompt 1.6)
+
+The only change between those two rows is `generate.py`: an answer the validator
+rejects is shown its own output plus the specific rejection reason, and gets exactly
+one more attempt. Same gates apply to the retry.
+
+| | baseline | + repair | delta |
+|---|---|---|---|
+| Answered (of 45 answerable) | 24 | **30** | **+6** |
+| Faithfulness | 0.53 | 0.65 | +0.12 |
+| Context recall | 0.53 | 0.67 | +0.14 |
+| Answer relevancy | 0.47 | 0.59 | +0.12 |
+| Hallucinated on unanswerable | 0/5 | **0/5** | unchanged |
+
+Measured directly on the 13 cases the gates had blocked: **8 now answer**, 4 became
+clean refusals, 1 still blocks. Every gain is a case where the model *had* the right
+chunk and fumbled the output format — a quote it retyped instead of copying, a
+figure it computed, a response that wasn't JSON.
+
+Two results in that table matter more than the headline:
+
+**The 4 that became refusals are a win, not a loss.** All four (g029, g030, g032,
+g033) are retrieval misses — the expected chunk was never in the top 5. The repair
+prompt states that `{"claims":[]}` is a valid answer, so instead of straining to
+answer from chunks that cannot support one and getting caught by the validator, the
+model now declines. Same outcome for the user, reached honestly and one gate earlier.
+
+**The hallucination count did not move.** A repair round is exactly the kind of
+change that could quietly become a bypass — "the model tried twice, ship it". It
+did not, because the repaired output runs through the identical
+`validate_answer` + `verify_entailment` path. Still 0/5 on the unanswerable cases.
+
+Not fixed by the repair, and worth being precise about: **retrieval is now the whole
+story.** Semantic recall@5 is unchanged at 47% — no prompt can repair a chunk that
+was never retrieved. The remaining silent cases are almost entirely retrieval misses,
+which is where the next work belongs.
 
 ### What the baseline actually says
 

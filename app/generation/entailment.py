@@ -53,6 +53,22 @@ class ClaimNotEntailedError(CitationValidationError):
     CitationValidationError so it flows through the existing generation
     fallback: the API returns sources, never an unfaithful answer."""
 
+    def __init__(self, message: str, category: str = "claim_not_entailed"):
+        super().__init__(message, category=category)
+
+
+class EntailmentUnavailableError(ClaimNotEntailedError):
+    """The judge itself is broken (API down, unparseable verdict) — so the claim is
+    *unverified*, not *unsupported*. Still fails closed, and still subclasses
+    ClaimNotEntailedError so every existing catch keeps working.
+
+    The distinction earns its keep in generate.py: a repair round asks the model to
+    fix its own output, and the model's output was never the problem here. Repairing
+    a dead judge just buys a second identical failure at full price."""
+
+    def __init__(self, message: str):
+        super().__init__(message, category="entailment_unavailable")
+
 
 @retry(
     retry=retry_if_exception_type((TimeoutError, ConnectionError)),
@@ -101,7 +117,7 @@ async def verify_entailment(answer: Answer, retrieved: list[RetrievedChunk]) -> 
         # Fail closed. An unavailable judge means "unverified", and an unverified
         # claim about someone's financials does not get served as fact.
         logger.warning("entailment check unavailable, refusing to certify answer: %s", exc)
-        raise ClaimNotEntailedError(f"entailment check unavailable: {exc}") from exc
+        raise EntailmentUnavailableError(f"entailment check unavailable: {exc}") from exc
 
     for claim_text, supported, reason in results:
         if not supported:

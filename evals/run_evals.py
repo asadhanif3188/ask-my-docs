@@ -314,6 +314,17 @@ def main() -> None:
 
     async def pipeline() -> list[dict]:
         org_id = await seed_eval_org()
+
+        # Load the embedder and reranker ONCE, before fanning out. Without this the
+        # first N concurrent cases each raced the cold model cache and loaded their
+        # own copy of a multi-GB model, which killed the process with a SIGSEGV
+        # before any case ran. The locks in embed.py/rerank.py make that safe; this
+        # makes it fast, by paying the load serially instead of under contention.
+        print("warming models...")
+        from app.ingestion.embed import warm_models
+
+        await asyncio.to_thread(warm_models)
+
         print(f"\nrunning {len(cases)} case(s) against org_id={org_id}, "
               f"concurrency={args.concurrency}")
         try:
