@@ -76,7 +76,9 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
         ) from exc
 
     if not candidates:
-        return QueryResponse(answer=None, sources=[], detail="No relevant documents found")
+        return QueryResponse(
+            answer=None, sources=[], detail="No relevant documents found", degraded=degraded
+        )
 
     top_chunks = rerank(req.question, candidates, top_k=settings.rerank_top_k)
 
@@ -91,14 +93,18 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
         # manual reproduction hunt — the user-facing detail says "unavailable"
         # even when the real cause was our own validator.
         logger.warning("generation unavailable for org=%s: %s", principal.org_id, exc)
-        # Fallback contract: still return retrieved passages, never a 500.
+        # Fallback contract: still return retrieved passages, never a 500. `degraded`
+        # is carried through even here — a composite failure (retrieval degraded AND
+        # generation unavailable) must still surface the degraded signal, not just
+        # the generation-unavailable detail.
         return QueryResponse(
             answer=None,
             sources=top_chunks,
             detail="Sources found but answer generation is temporarily unavailable",
+            degraded=degraded,
         )
 
-    return QueryResponse(answer=answer, sources=top_chunks)
+    return QueryResponse(answer=answer, sources=top_chunks, degraded=degraded)
 
 
 @router.post("/feedback/{trace_id}")

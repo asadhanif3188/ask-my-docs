@@ -140,7 +140,8 @@ plus one deliberately truncated PDF:
       "score": 0.9828665852546692
     }
   ],
-  "detail": null
+  "detail": null,
+  "degraded": false
 }
 ```
 

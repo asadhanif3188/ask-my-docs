@@ -488,3 +488,56 @@ The single-copy fix removes the 3x multiplier; it does not make the models small
 machine that cannot hold one embedder plus one reranker (~3.4GB) will still fail.
 
 **Time to resolve:** ~40 minutes, most of it spent on the concurrency red herring.
+
+---
+
+## Incident: a composite failure (dense search down AND generation down) silently dropped the degraded signal
+
+**Date:** 2026-07-15
+**Symptom:** No user report — found while writing `tests/test_failure_modes.py` to pin
+the documented failure contracts of `hybrid.py`, `generate.py`, and `query.py` under
+induced failure. The task brief itself predicted this: "Both fail -> still a
+structured 200 with sources from FTS and degraded flag + unavailable detail
+simultaneously (composite failure — likely untested; if the code can't represent
+both, fix the model)." It couldn't.
+**Detection:** Reading `app/api/query.py` alongside `app/models.py` before writing the
+composite test. `QueryResponse` had no `degraded` field of its own — `degraded` lived
+only on `Answer.degraded` (`app/models.py:26`). `query.py` computes a local `degraded`
+bool when `RetrievalDegraded` is caught and correctly threads it into
+`generate_answer(..., degraded=degraded, ...)`, but when generation *also* fails,
+the `GenerationUnavailable` branch returns `QueryResponse(answer=None, sources=top_chunks,
+detail="Sources found but answer generation is temporarily unavailable")` — no `Answer`
+object, so no `Answer.degraded`, and the local `degraded` variable was simply never
+read. A client whose dense search AND generation were both down would see only
+`"detail": "...unavailable"` with no way to know retrieval was *also* running on the
+FTS-only fallback. This was not a hypothetical: any transient blip that took out both
+the embedding endpoint and the LLM endpoint at once (same upstream provider outage,
+for instance) would hit exactly this path.
+**Root cause:** `degraded` was designed as a property of a successful `Answer`, not as
+a property of the request. That modeling choice is correct for the single-failure case
+(retrieval degrades, generation still succeeds -> the flag rides along on the `Answer`
+it produced) but has no representation for the case where there is no `Answer` at all.
+**Fix:** Added a top-level `degraded: bool` field to `QueryResponse` (`app/models.py`),
+mirroring `Answer.degraded` but independent of whether an `Answer` exists. `query.py`
+now passes `degraded=degraded` on every `QueryResponse` it constructs — the
+no-candidates early return, the `GenerationUnavailable` fallback, and the success path
+— not just the ones that happened to have an `Answer` in hand.
+**Regression guard:** `tests/test_failure_modes.py ::
+test_composite_failure_still_returns_structured_200_with_both_signals` pins the exact
+scenario: `RetrievalDegraded` and `GenerationUnavailable` raised together must still
+yield `HTTP 200`, `sources` non-empty, the generation-unavailable `detail`, AND
+`degraded: true` — all four at once. The same file also pins claims 1, 2, and 4 from
+the task brief (dense-failure fallback with the degraded flag now verified at the API
+level, not just the exception level; LLM-unavailable via a realistic
+`anthropic.AuthenticationError` rather than a generic exception; and a malformed PDF
+quarantined with a reason through the *full* job path, `process_job ->
+pipeline.ingest_document`, which only had a lower-level `parse_pdf()` pin before).
+**Verified live:** started the app with `EMBEDDING_MODEL` pointed at a nonexistent
+HuggingFace repo and issued a real `/v1/query` against the actual demo-org corpus
+(1,973 chunks). Response: `HTTP 200`, `"degraded": true` at the top level,
+`"answer": {"claims": [], "degraded": true}`, and a real FTS-only Apple 10-K chunk in
+`sources` — confirming the single-failure path this incident's fix does not change.
+The composite path (both retrieval and generation down) is covered by the unit-level
+regression test above, not re-verified live, since reproducing "the LLM is also down"
+live means intentionally invalidating the API key mid-session.
+**Time to resolve:** ~20 minutes once found; finding it was the point of the exercise.
