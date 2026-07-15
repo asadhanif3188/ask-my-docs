@@ -48,9 +48,16 @@ class _FakeContentBlock:
         self.text = text
 
 
+class _FakeUsage:
+    def __init__(self, input_tokens: int = 10, output_tokens: int = 5):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class _FakeMessage:
     def __init__(self, text: str):
         self.content = [_FakeContentBlock(text)]
+        self.usage = _FakeUsage()
 
 
 def _fake_client(text: str) -> MagicMock:
@@ -89,13 +96,20 @@ def _stub_entailment_judge(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_token_usage(monkeypatch):
+    """This suite is about JSON-shape parsing, not token accounting (covered in
+    tests/test_token_budget.py) — stub the write so no real DB is required."""
+    monkeypatch.setattr(generate_module, "record_usage", AsyncMock())
+
+
 @pytest.mark.parametrize("shape", RESPONSE_SHAPES)
 async def test_generate_answer_parses_every_response_shape(monkeypatch, shape):
     monkeypatch.setattr(
         generate_module, "AsyncAnthropic", lambda **kw: _fake_client(RESPONSE_SHAPES[shape])
     )
 
-    answer = await generate_answer("What was Apple's revenue?", [CHUNK])
+    answer = await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert len(answer.claims) == 1
     assert answer.claims[0].citations[0].chunk_id == 514
@@ -112,6 +126,6 @@ async def test_no_llm_call_escapes_the_mocks(monkeypatch):
         generate_module, "AsyncAnthropic", lambda **kw: _fake_client(RESPONSE_SHAPES["plain"])
     )
 
-    answer = await generate_answer("What was Apple's revenue?", [CHUNK])
+    answer = await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert answer.claims[0].citations[0].chunk_id == 514

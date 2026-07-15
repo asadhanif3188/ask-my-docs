@@ -24,6 +24,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from app.config import get_settings
 from app.generation.validate import CitationValidationError, validate_answer
 from app.models import Answer, RetrievedChunk
+from app.token_usage import PURPOSE_GENERATION, PURPOSE_REPAIR, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def _format_sources(chunks: list[RetrievedChunk]) -> str:
     wait=wait_exponential(min=1, max=8),
     reraise=True,
 )
-async def _call_llm(messages: list[dict]) -> str:
+async def _call_llm(messages: list[dict], *, org_id: int, purpose: str) -> str:
     """The single path to the model. Both the first attempt and the repair go through
     it, so the repair inherits this tenacity policy instead of nesting a second one
     inside it — retries around retries turn one 3-attempt budget into nine."""
@@ -130,7 +131,19 @@ async def _call_llm(messages: list[dict]) -> str:
         system=SYSTEM_PROMPT,
         messages=messages,
     )
-    # TODO(phase2): record input/output tokens into token_usage for the org budget cutoff
+    try:
+        await record_usage(
+            org_id=org_id, purpose=purpose,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
+    except Exception:
+        # A billing/telemetry write must never turn an already-successful LLM
+        # call into a user-facing failure — the answer this call produced is
+        # still good, so log and move on rather than raising.
+        logger.warning(
+            "failed to record token usage org=%s purpose=%s", org_id, purpose, exc_info=True
+        )
     return message.content[0].text
 
 
@@ -161,12 +174,12 @@ async def _parse_and_validate(
 
 
 async def generate_answer(
-    question: str, chunks: list[RetrievedChunk], degraded: bool = False
+    question: str, chunks: list[RetrievedChunk], degraded: bool = False, *, org_id: int
 ) -> Answer:
     first_turn = _first_turn(question, chunks)
 
     try:
-        raw = await _call_llm([first_turn])
+        raw = await _call_llm([first_turn], org_id=org_id, purpose=PURPOSE_GENERATION)
     except Exception as exc:
         raise GenerationUnavailable(str(exc)) from exc
 
@@ -190,7 +203,7 @@ async def generate_answer(
             first_turn,
             {"role": "assistant", "content": raw},
             {"role": "user", "content": REPAIR_PROMPT.format(reason=str(first_failure))},
-        ])
+        ], org_id=org_id, purpose=PURPOSE_REPAIR)
     except Exception as exc:
         raise GenerationUnavailable(str(exc)) from exc
 

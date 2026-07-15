@@ -121,7 +121,9 @@ async def run_case(case: dict, org_id: int) -> dict:
     row["chunk_ids"] = [c.chunk_id for c in top_chunks]
 
     try:
-        answer = await generate_answer(question, top_chunks, degraded=row["degraded"])
+        answer = await generate_answer(
+            question, top_chunks, degraded=row["degraded"], org_id=org_id
+        )
     except GenerationUnavailable as exc:
         # Distinguish "our validator refused to serve this" from "Anthropic 500'd".
         # Both produce no answer, but only the first is the system behaving correctly.

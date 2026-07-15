@@ -47,6 +47,26 @@ def _stub_rewrite(monkeypatch):
     monkeypatch.setattr(query_api, "rewrite_query", no_op_rewrite)
 
 
+@pytest.fixture(autouse=True)
+def _stub_budget_check(monkeypatch):
+    """These tests are about retrieval/generation failure paths, not the token
+    budget gate (covered in test_token_budget.py). Without this, every
+    client.post("/v1/query") below acquires a real DB pool for the budget
+    check — and since these tests don't use the `pool` fixture (which tears
+    its pool down per-test), that pool would be cached across pytest-asyncio's
+    per-test event loops and crash the next test that touches it.
+    """
+
+    async def no_usage(org_id: int) -> int:
+        return 0
+
+    async def generous_limit(org_id: int) -> int:
+        return 1_000_000
+
+    monkeypatch.setattr(query_api, "usage_today", no_usage)
+    monkeypatch.setattr(query_api, "daily_limit", generous_limit)
+
+
 async def test_hybrid_retrieve_raises_unavailable_when_fts_branch_is_down(monkeypatch):
     """FTS is the fallback path itself — if it dies, degrading is not an option."""
 

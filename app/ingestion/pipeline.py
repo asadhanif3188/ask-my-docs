@@ -90,7 +90,7 @@ async def ingest_document(org_id: int, source_uri: str, path: Path, title: str |
             return doc_id
 
         chunks = split_into_chunks(pages)
-        summary = await summarize_document("\n".join(t for _, t in pages))
+        summary = await summarize_document("\n".join(t for _, t in pages), org_id=org_id)
         vectors = embed_texts([f"{summary}\n{c.text}" for c in chunks])
 
         # Re-ingest: replace chunks atomically within this transaction.

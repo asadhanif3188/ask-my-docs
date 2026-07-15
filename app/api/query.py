@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from app.auth import Principal, get_principal
 from app.config import get_settings
@@ -9,6 +10,7 @@ from app.models import QueryRequest, QueryResponse
 from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
 from app.retrieval.rerank import rerank
 from app.retrieval.rewrite import rewrite_query
+from app.token_usage import daily_limit, usage_today
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,25 @@ router = APIRouter()
 async def query(req: QueryRequest, principal: Principal = Depends(get_principal)) -> QueryResponse:
     settings = get_settings()
 
-    # TODO(phase2): rate limit per user + org daily token budget check (token_usage table)
+    # Advisory-before + record-after: usage_today is read here, before retrieval
+    # or generation start, but a call's tokens are only recorded once it actually
+    # completes (generate.py's _call_llm). A request that starts just under
+    # budget can therefore still finish over it — e.g. concurrent requests race
+    # this check, or the repair round adds a second call after it passed. That
+    # is accepted, not an oversight: the alternative (locking the org's budget
+    # row for the request's duration) would serialize every query in an org
+    # behind a single lock to prevent a rare, small overshoot.
+    usage = await usage_today(principal.org_id)
+    limit = await daily_limit(principal.org_id)
+    if usage >= limit:
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Daily token budget exceeded",
+                "usage_today": usage,
+                "daily_limit": limit,
+            },
+        )
 
     rewritten = await rewrite_query(req.question)
 
@@ -50,7 +70,9 @@ async def query(req: QueryRequest, principal: Principal = Depends(get_principal)
     top_chunks = rerank(req.question, candidates, top_k=settings.rerank_top_k)
 
     try:
-        answer = await generate_answer(req.question, top_chunks, degraded=degraded)
+        answer = await generate_answer(
+            req.question, top_chunks, degraded=degraded, org_id=principal.org_id
+        )
     except GenerationUnavailable as exc:
         # Log the cause, always. This branch swallows everything from a dead API
         # to a rejected citation, and twice already (INCIDENTS.md: fenced JSON,

@@ -56,7 +56,7 @@ def fixture_pdf(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _mock_llm_calls(monkeypatch):
-    async def fake_summarize(full_text):
+    async def fake_summarize(full_text, org_id=None):
         return FAKE_SUMMARY
 
     def fake_embed(texts):

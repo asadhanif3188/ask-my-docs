@@ -66,9 +66,16 @@ class _Block:
         self.text = text
 
 
+class _Usage:
+    def __init__(self, input_tokens: int = 10, output_tokens: int = 5):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class _Msg:
     def __init__(self, text: str):
         self.content = [_Block(text)]
+        self.usage = _Usage()
 
 
 def _generator(monkeypatch, *responses: str) -> MagicMock:
@@ -92,10 +99,18 @@ def _stub_judge(monkeypatch):
     return judge
 
 
+@pytest.fixture(autouse=True)
+def _stub_token_usage(monkeypatch):
+    """This suite is about the repair-round contract, not token accounting
+    (covered in tests/test_token_budget.py) — stub the write so no real DB
+    connection is required."""
+    monkeypatch.setattr(generate_module, "record_usage", AsyncMock())
+
+
 async def test_valid_first_output_is_not_repaired(monkeypatch):
     client = _generator(monkeypatch, VALID)
 
-    answer = await generate_answer("What was Apple's revenue?", [CHUNK])
+    answer = await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert answer.claims[0].citations[0].chunk_id == 514
     assert client.messages.create.await_count == 1, "a valid answer must not be repaired"
@@ -114,7 +129,7 @@ async def test_invalid_output_is_repaired_in_exactly_one_extra_call(
 ):
     client = _generator(monkeypatch, bad_first, VALID)
 
-    answer = await generate_answer("What was Apple's revenue?", [CHUNK])
+    answer = await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert answer.claims[0].citations[0].chunk_id == 514
     assert client.messages.create.await_count == 2
@@ -133,7 +148,7 @@ async def test_answer_is_refused_when_the_repair_also_fails(monkeypatch):
     client = _generator(monkeypatch, BAD_QUOTE, INVENTED_NUMBER)
 
     with pytest.raises(GenerationUnavailable):
-        await generate_answer("What was Apple's revenue?", [CHUNK])
+        await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     # Exactly 2: one repair, then give up. A loop would keep going, and the raised
     # exception alone would not tell us the difference.
@@ -146,7 +161,7 @@ async def test_repair_output_still_faces_the_full_gate(monkeypatch):
     _generator(monkeypatch, NOT_JSON, INVENTED_NUMBER)
 
     with pytest.raises(GenerationUnavailable, match="citation validation"):
-        await generate_answer("What was Apple's revenue?", [CHUNK])
+        await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
 
 async def test_a_dead_judge_is_not_repaired(monkeypatch, caplog):
@@ -159,7 +174,7 @@ async def test_a_dead_judge_is_not_repaired(monkeypatch, caplog):
     monkeypatch.setattr(entailment_module, "AsyncAnthropic", lambda **kw: judge)
 
     with pytest.raises(GenerationUnavailable):
-        await generate_answer("What was Apple's revenue?", [CHUNK])
+        await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert client.messages.create.await_count == 1, "a dead judge must not trigger a repair"
     assert "entailment_unavailable" in caplog.text
@@ -173,7 +188,7 @@ async def test_a_transient_api_error_does_not_consume_the_repair(monkeypatch):
     client.messages.create = AsyncMock(side_effect=[ConnectionError("reset"), _Msg(VALID)])
     monkeypatch.setattr(generate_module, "AsyncAnthropic", lambda **kw: client)
 
-    answer = await generate_answer("What was Apple's revenue?", [CHUNK])
+    answer = await generate_answer("What was Apple's revenue?", [CHUNK], org_id=1)
 
     assert answer.claims[0].citations[0].chunk_id == 514
     assert client.messages.create.await_count == 2  # 1 retried transport call + success

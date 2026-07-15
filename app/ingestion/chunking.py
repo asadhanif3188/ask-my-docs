@@ -4,6 +4,12 @@
 2. Generate a one-line document-level summary once per document (LLM call).
 3. Prepend that summary (context_summary) to each chunk before embedding —
    the raw chunk text is stored separately so quotes can still be verified verbatim.
+
+Token spend here is recorded (purpose='summary', see app/token_usage.py) but
+never gates on the org's daily budget the way api/query.py does: ingestion runs
+as a background job with no request to reject, and a summary is a single cheap
+call per document, not a per-request cost an org can be spammed with. Budget
+enforcement is deliberately scoped to the interactive /query path only.
 """
 
 import logging
@@ -13,6 +19,7 @@ from anthropic import AsyncAnthropic
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
+from app.token_usage import PURPOSE_SUMMARY, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +97,7 @@ def _truncate_for_summary(full_text: str) -> str:
     wait=wait_exponential(min=1, max=8),
     reraise=True,
 )
-async def _call_summary_llm(text: str) -> str:
+async def _call_summary_llm(text: str, *, org_id: int) -> str:
     settings = get_settings()
     client = AsyncAnthropic(api_key=settings.llm_api_key)
     message = await client.messages.create(
@@ -99,10 +106,21 @@ async def _call_summary_llm(text: str) -> str:
         system=SUMMARY_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": text}],
     )
+    try:
+        await record_usage(
+            org_id=org_id, purpose=PURPOSE_SUMMARY,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
+    except Exception:
+        # Ingestion-side usage recording must never block a job — same
+        # quarantine-don't-crash contract summarize_document already follows
+        # below, applied here to billing instead of the summary itself.
+        logger.warning("failed to record token usage org=%s purpose=summary", org_id, exc_info=True)
     return message.content[0].text
 
 
-async def summarize_document(full_text: str) -> str:
+async def summarize_document(full_text: str, *, org_id: int) -> str:
     """One-line document summary used as the contextual prefix for every chunk.
 
     A missing summary must degrade recall, never block ingestion: any failure
@@ -111,7 +129,7 @@ async def summarize_document(full_text: str) -> str:
     """
     truncated = _truncate_for_summary(full_text)
     try:
-        raw = await _call_summary_llm(truncated)
+        raw = await _call_summary_llm(truncated, org_id=org_id)
     except Exception:
         logger.warning("summarize_document failed; continuing without a context summary", exc_info=True)
         return ""

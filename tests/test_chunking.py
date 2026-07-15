@@ -5,6 +5,7 @@ output, and quarantine-don't-crash failure behavior (empty string, never raises)
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from tenacity import wait_none
 
 from app.config import get_settings
@@ -17,15 +18,30 @@ class _FakeContentBlock:
         self.text = text
 
 
+class _FakeUsage:
+    def __init__(self, input_tokens: int = 10, output_tokens: int = 5):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class _FakeMessage:
     def __init__(self, text: str):
         self.content = [_FakeContentBlock(text)]
+        self.usage = _FakeUsage()
 
 
 def _fake_client(create: AsyncMock) -> MagicMock:
     client = MagicMock()
     client.messages.create = create
     return client
+
+
+@pytest.fixture(autouse=True)
+def _stub_token_usage(monkeypatch):
+    """This suite is about summarization behavior, not token accounting
+    (covered in tests/test_token_budget.py) — stub the write so no real DB
+    connection is required."""
+    monkeypatch.setattr(chunking, "record_usage", AsyncMock())
 
 
 # --- split_into_chunks -------------------------------------------------------
@@ -72,7 +88,7 @@ async def test_summarize_document_strips_newlines_and_returns_single_line(monkey
     create = AsyncMock(return_value=_FakeMessage("Acme Corp 10-K annual filing\nfor fiscal year 2024."))
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(create))
 
-    result = await summarize_document("Acme Corp files its annual 10-K report.")
+    result = await summarize_document("Acme Corp files its annual 10-K report.", org_id=1)
 
     assert "\n" not in result
     assert result == "Acme Corp 10-K annual filing for fiscal year 2024."
@@ -89,7 +105,7 @@ async def test_summarize_document_truncates_huge_input(monkeypatch):
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(fake_create))
 
     huge_text = "HEAD_MARKER " + ("x" * 300_000) + " TAIL_MARKER"
-    await summarize_document(huge_text)
+    await summarize_document(huge_text, org_id=1)
 
     sent = captured["sent"]
     # Tight bound (not just "shorter than input"): head + tail + the ellipsis marker.
@@ -111,7 +127,7 @@ async def test_summarize_document_passthrough_for_small_input(monkeypatch):
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(fake_create))
 
     small_text = "This is a short document."
-    await summarize_document(small_text)
+    await summarize_document(small_text, org_id=1)
 
     assert captured["sent"] == small_text
     assert captured["model"] == get_settings().summary_model
@@ -122,7 +138,7 @@ async def test_summarize_document_caps_output_length(monkeypatch):
     create = AsyncMock(return_value=_FakeMessage(long_summary))
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(create))
 
-    result = await summarize_document("some document text")
+    result = await summarize_document("some document text", org_id=1)
 
     assert len(result) <= 200
 
@@ -136,7 +152,7 @@ async def test_summarize_document_returns_empty_string_on_non_retryable_failure(
 
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(failing_create))
 
-    result = await summarize_document("some document text")
+    result = await summarize_document("some document text", org_id=1)
 
     assert result == ""
 
@@ -153,7 +169,7 @@ async def test_summarize_document_retries_then_recovers_on_retryable_errors(monk
 
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(flaky_create))
 
-    result = await summarize_document("some document text")
+    result = await summarize_document("some document text", org_id=1)
 
     assert attempts["count"] == 3
     assert result == "Recovered summary after retries."
@@ -170,7 +186,7 @@ async def test_summarize_document_gives_up_after_max_retries_and_logs_warning(mo
     monkeypatch.setattr(chunking, "AsyncAnthropic", lambda **kw: _fake_client(always_failing_create))
 
     with caplog.at_level("WARNING", logger="app.ingestion.chunking"):
-        result = await summarize_document("some document text")
+        result = await summarize_document("some document text", org_id=1)
 
     assert attempts["count"] == 3  # stop_after_attempt(3): retries exhausted, not just one try
     assert result == ""  # must degrade recall, never block ingestion
