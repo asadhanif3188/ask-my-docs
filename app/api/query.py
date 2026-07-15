@@ -7,6 +7,7 @@ from app.auth import Principal, get_principal
 from app.config import get_settings
 from app.generation.generate import GenerationUnavailable, generate_answer
 from app.models import QueryRequest, QueryResponse
+from app.rate_limit import check_rate_limit
 from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
 from app.retrieval.rerank import rerank
 from app.retrieval.rewrite import rewrite_query
@@ -20,6 +21,16 @@ router = APIRouter()
 @router.post("/query", response_model=QueryResponse)
 async def query(req: QueryRequest, principal: Principal = Depends(get_principal)) -> QueryResponse:
     settings = get_settings()
+
+    # Rate limit (cheap, in-process, no DB) before the org budget check (a DB
+    # aggregate) before retrieval — cheapest gate first, see app/rate_limit.py.
+    allowed, retry_after = check_rate_limit(principal.user_id)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded, please slow down"},
+            headers={"Retry-After": str(retry_after)},
+        )
 
     # Advisory-before + record-after: usage_today is read here, before retrieval
     # or generation start, but a call's tokens are only recorded once it actually

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     retrieve_top_k: int = 50
     rerank_top_k: int = 5
 
-    rate_limit_per_minute: int = 30
+    rate_limit_per_minute: int = 20
     org_daily_token_budget: int = 500_000
 
     # Second faithfulness layer: an LLM judge checks each claim sentence against

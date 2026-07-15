@@ -178,6 +178,23 @@ tests/               tenant isolation, ingestion lifecycle, citation validation
 scripts/             ingest CLI, migrate, fetch_corpus (demo corpus), dev_token (dev JWT)
 ```
 
+## What I'd do next at 10x scale
+
+- **Rate limiting** (`app/rate_limit.py`): per-user request limiting is an
+  in-memory fixed-window counter, chosen because it's the cheap gate that
+  runs before the org budget check's DB aggregate — no extra Postgres round
+  trip per query. Ceiling: the counter is per-process state. Behind a
+  load-balanced, multi-replica deployment each replica enforces its N
+  req/min independently, so a user's effective limit becomes N × replica
+  count, not N. Past one replica, move to a shared counter — a `rate_limit`
+  table UPSERT-incremented on `(user_id, window_start)`, same pattern
+  `token_usage.py` already uses — rather than reaching for Redis.
+- **pgvector**: fine to ~10M chunks; past that, a dedicated vector DB (or
+  sharding by org) to keep ANN index build/query time bounded.
+- **Ingestion job queue**: Postgres `FOR UPDATE SKIP LOCKED` (`jobs.py`) is
+  fine to ~tens of jobs/sec; past that, a real broker (SQS/Kafka) so a hot
+  queue table doesn't become a lock-contention bottleneck.
+
 ## Status
 
 - [ ] Phase 1 — Core: ingestion CLI, query path, 50-question golden set
