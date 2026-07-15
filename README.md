@@ -158,6 +158,55 @@ Running the pipeline against real documents is what surfaced every bug in
 | Total DB outage | Plain-text `500`, breaking the JSON contract | `RetrievalDegraded` only guarded the dense branch — an outage kills the FTS branch it falls back *to* |
 | Citation false-rejection | Correct answers discarded ~half the time | PDF extraction put `$` on its own line, so the gate rejected the model's natural `$391,035` |
 
+## Security: tenant isolation
+
+**`tests/test_tenant_isolation.py` is the "tenant A cannot read tenant B" proof
+artifact.** It asserts zero cross-tenant leakage at two independent layers:
+
+- **SQL layer** — `_fts_search`, `_dense_search`, and the fused
+  `hybrid_retrieve` are called directly against two seeded orgs with
+  near-identical fixture chunks. The dense-search case seeds real (deterministic,
+  mocked-model) embeddings and deliberately makes org B's vector the *nearest
+  possible neighbor* to the query vector, so if the `WHERE org_id = $1` filter
+  in `app/retrieval/hybrid.py` were ever dropped, org B's chunk would be the
+  first thing to leak into org A's results — the test fails loudly, not quietly.
+- **API layer** — one HTTP-level test mints a real JWT for org A (via the same
+  `jwt.encode` path as `scripts/dev_token.py`, not a `dependency_overrides`
+  bypass) and posts it to the live `/v1/query` route, proving the whole
+  auth → retrieval chain is scoped end to end.
+
+**SQL audit** (every statement in `app/retrieval/` and `app/ingestion/` that
+touches `chunks` or `documents`, checked for a `WHERE org_id` clause):
+
+| File:line | Statement | org_id scoped? |
+|---|---|---|
+| `retrieval/hybrid.py:45` | `SELECT ... FROM chunks WHERE org_id = $1 AND tsv @@ ...` | ✅ |
+| `retrieval/hybrid.py:70` | `SELECT ... FROM chunks WHERE org_id = $1 AND embedding ...` | ✅ |
+| `ingestion/pipeline.py:65` | `SELECT id, content_hash FROM documents WHERE org_id=$1 AND source_uri=$2` | ✅ |
+| `ingestion/pipeline.py:73` | `INSERT INTO documents (org_id, ...)` | ✅ (org_id set on insert) |
+| `ingestion/pipeline.py:87` | `UPDATE documents SET status='quarantined' ... WHERE id=$1` | ⚠️ not directly — see below |
+| `ingestion/pipeline.py:97` | `DELETE FROM chunks WHERE document_id=$1` | ⚠️ not directly — see below |
+| `ingestion/pipeline.py:100` | `INSERT INTO chunks (document_id, org_id, ...)` | ✅ (org_id set on insert) |
+| `ingestion/pipeline.py:109` | `UPDATE documents SET status='ready' ... WHERE id=$1` | ⚠️ not directly — see below |
+| `ingestion/jobs.py:69` | `UPDATE documents SET status='quarantined' ... WHERE id=$1` | ⚠️ not directly — see below |
+| `ingestion/jobs.py:78` | `DELETE FROM chunks WHERE document_id=$1` | ⚠️ not directly — see below |
+| `ingestion/jobs.py:81` | `SELECT org_id, source_uri, title FROM documents WHERE id=$1` | ⚠️ not directly — see below |
+
+The `⚠️` rows filter by primary key (`id` / `document_id`) rather than
+`org_id`, so in isolation they don't *prove* tenant scoping. They're not
+exploitable today: every one of them only ever runs against a `document_id`
+that was already resolved through an org-scoped path earlier in the same
+call — `pipeline.ingest_document` looks up/creates the `documents` row via
+`WHERE org_id=$1 AND source_uri=$2` before touching `chunks`, and
+`api/documents.py`'s `delete_document` requires `WHERE id=$1 AND org_id=$2`
+before it ever enqueues the `ingestion_jobs` row that `jobs.py` later acts on.
+There is currently no route that lets a caller supply an arbitrary
+`document_id` to these ingestion-worker statements directly. Flagging this as
+a latent gap rather than a live vulnerability: if a future change ever lets
+job/document IDs originate from less-trusted input, these statements would
+need an explicit `org_id` check added at that point, not silently rely on the
+caller having already checked it.
+
 ## Project layout
 
 ```
