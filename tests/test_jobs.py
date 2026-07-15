@@ -4,45 +4,10 @@ Postgres connection (see conftest.py) and mocks the summary + embedding LLM
 calls so no real model or API key is needed.
 """
 
-import io
-
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.ingestion import jobs, pipeline
-
-
-def _make_pdf_bytes(text: str) -> bytes:
-    """Builds a minimal single-page PDF with real extractable text, entirely via
-    pypdf (already a project dependency) — no reportlab needed. Uses pypdf's
-    private `_add_object` (no public "draw text" API exists); if a future pypdf
-    release renames/removes it, this fixture (not app code) breaks first."""
-    writer = PdfWriter()
-    page = writer.add_blank_page(width=200, height=200)
-
-    stream = DecodedStreamObject()
-    stream.set_data(f"BT /F1 18 Tf 10 100 Td ({text}) Tj ET".encode())
-    stream_ref = writer._add_object(stream)
-
-    font = DictionaryObject()
-    font[NameObject("/Type")] = NameObject("/Font")
-    font[NameObject("/Subtype")] = NameObject("/Type1")
-    font[NameObject("/BaseFont")] = NameObject("/Helvetica")
-    font_ref = writer._add_object(font)
-
-    resources = DictionaryObject()
-    font_dict = DictionaryObject()
-    font_dict[NameObject("/F1")] = font_ref
-    resources[NameObject("/Font")] = font_dict
-
-    page[NameObject("/Resources")] = resources
-    page[NameObject("/Contents")] = stream_ref
-
-    buf = io.BytesIO()
-    writer.write(buf)
-    return buf.getvalue()
-
+from tests.conftest import make_pdf_bytes
 
 FAKE_SUMMARY = "A short fixture document about ingestion."
 
@@ -50,7 +15,7 @@ FAKE_SUMMARY = "A short fixture document about ingestion."
 @pytest.fixture
 def fixture_pdf(tmp_path):
     path = tmp_path / "fixture.pdf"
-    path.write_bytes(_make_pdf_bytes("Hello ingestion world"))
+    path.write_bytes(make_pdf_bytes("Hello ingestion world"))
     return path
 
 
