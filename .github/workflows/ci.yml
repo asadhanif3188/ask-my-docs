@@ -89,7 +89,7 @@ jobs:
         if: steps.check-key.outputs.has_key == 'false'
         run: |
           echo "::warning::LLM_API_KEY secret not available (fork PR?). Eval gate skipped."
-          echo "To run evals locally with your own key: uv run ci-local"
+          echo "To run evals locally with your own key: uv run python -m scripts.ci_local"
           exit 0
       - name: Seed eval org and corpus
         if: steps.check-key.outputs.has_key == 'true'

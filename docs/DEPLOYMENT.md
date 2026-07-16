@@ -145,7 +145,7 @@ export DATABASE_URL=postgresql://rag:rag@localhost:5432/askmydocs
 export JWT_SECRET=ci-only-secret
 export LLM_API_KEY=<your-anthropic-key>
 
-uv run ci-local
+uv run python -m scripts.ci_local
 ```
 
 ### Eval gate is red but should be green
