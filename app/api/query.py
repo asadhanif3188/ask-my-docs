@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.auth import Principal, get_principal
 from app.config import get_settings
 from app.generation.generate import GenerationUnavailable, generate_answer
+from app.guardrails import ValidationError, validate_question
 from app.models import QueryRequest, QueryResponse
 from app.rate_limit import check_rate_limit
 from app.retrieval.hybrid import RetrievalDegraded, RetrievalUnavailable, hybrid_retrieve
@@ -22,14 +23,30 @@ router = APIRouter()
 async def query(req: QueryRequest, principal: Principal = Depends(get_principal)) -> QueryResponse:
     settings = get_settings()
 
-    # Rate limit (cheap, in-process, no DB) before the org budget check (a DB
-    # aggregate) before retrieval — cheapest gate first, see app/rate_limit.py.
+    # Rate limit first (cheap, in-process, no DB) so rejected/malicious requests still
+    # count toward the per-user throttle. Before the org budget check (a DB aggregate)
+    # before retrieval — see app/rate_limit.py.
     allowed, retry_after = check_rate_limit(principal.user_id)
     if not allowed:
         return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded, please slow down"},
             headers={"Retry-After": str(retry_after)},
+        )
+
+    # Input validation: reject malformed/malicious inputs after rate limiting
+    try:
+        validate_question(req.question)
+    except ValidationError as exc:
+        logger.warning(
+            "Guardrails rejected input: category=%s org_id=%s user_id=%s",
+            exc.category,
+            principal.org_id,
+            principal.user_id,
+        )
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Question could not be processed"},
         )
 
     # Advisory-before + record-after: usage_today is read here, before retrieval
