@@ -232,6 +232,18 @@ job/document IDs originate from less-trusted input, these statements would
 need an explicit `org_id` check added at that point, not silently rely on the
 caller having already checked it.
 
+## Input guardrails (defense in depth)
+
+**What it is:** A lightweight, synchronous pre-filter at the entry of `POST /query` (`app/guardrails.py`) that runs three cheap checks in order: (1) **length/shape validation** — rejects empty, oversized, or mostly non-text inputs (base64 blobs, giant number runs); (2) **prompt-injection heuristic** — matches classic families (instruction-override, role-play jailbreaks, model-directed attempts) with case-insensitive regexes; (3) **optional per-org topic allowlist** — off by default, enables coarse opt-in scope hints (e.g., `["revenue", "risk"]`). Rejections return HTTP 400 with a neutral message ("question could not be processed"); every rejection logs the category (never the pattern) at WARNING level with org/user IDs for Project 3 dashboards.
+
+**What it is NOT:** the security boundary. Regex injection filters are leaky (trivially obfuscated) and brittle (false-positive prone), so guardrails are tuned to shed *obvious* abuse while accepting some sophisticated attacks. The real defenses are downstream: `generate.py`'s system prompt confines the model to provided source chunks, and `validate.py` rejects any claim without a verbatim citation — both run unconditionally on every request, regardless of what the guardrails pass.
+
+**The false-positive trade-off:** We accept letting some crafted injections through (the downstream backstop catches their effect) in exchange for near-zero false rejections of legitimate questions. This is enforced by the golden-set test: all 50 benign, real questions must pass validation — a guardrail that blocks real users is worse than none.
+
+**Observable signal:** every rejection logs a stable category with tenant context (org_id, user_id), never the matched pattern or input text — keeps the endpoint from being a probe oracle for attackers, and feeds Project 3 dashboards for observability. Categories are `length` (empty or oversized), `shape` (non-text like base64/hex/numbers), `topic` (off-allowlist), and `prompt_injection:<family>` where family is one of `instruction_override`, `roleplay`, or `model_directed` — the family suffix lets the dashboard break down attack types rather than lumping them into one total.
+
+**10x-scale note:** Heuristics are a starting point. A future upgrade is a learned classifier or a moderation API call, measured against the golden set for false-positive regression. Today, the heuristic sheds obvious abuse cheaply; the citation validator guarantees correctness.
+
 ## Project layout
 
 ```

@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 20
     org_daily_token_budget: int = 500_000
 
+    # Input validation guardrails (app/guardrails.py)
+    max_question_length: int = 2000
+    # Optional per-org allowlist of allowed question topics (e.g., ["revenue", "risk"])
+    # Empty (default) means all topics allowed. Real topic classification is out of scope —
+    # this is an advisory gate for organizations with strict scope requirements.
+    allowed_topics: list[str] = []
+
     # Second faithfulness layer: an LLM judge checks each claim sentence against
     # the evidence it cites (generation/entailment.py). Costs one cheap-model call
     # per claim. The deterministic gates in generation/validate.py run regardless.

@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=2000)
+    question: str
+    # Length validation (min/max) is handled by app/guardrails.py (returns 400) instead of
+    # Pydantic's automatic 422, so all rejections get the same neutral message and are logged
 
 
 class Citation(BaseModel):
