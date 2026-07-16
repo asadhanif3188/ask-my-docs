@@ -48,7 +48,8 @@ from app.retrieval.rerank import rerank
 from app.retrieval.rewrite import rewrite_query
 from evals.seed_eval_org import seed_eval_org
 
-GOLDEN_SET = Path(__file__).parent / "golden_set.jsonl"
+GOLDEN_SET_FULL = Path(__file__).parent / "golden_set.jsonl"
+GOLDEN_SET_CI = Path(__file__).parent / "golden_set_ci.jsonl"
 
 # Statuses a case can end in. Only ANSWERED yields text worth scoring.
 ANSWERED = "answered"    # >=1 validated, cited claim
@@ -59,8 +60,8 @@ NO_CONTEXT = "no_context"
 RETRIEVAL_DOWN = "retrieval_unavailable"
 
 
-def load_golden_set() -> list[dict]:
-    cases = [json.loads(line) for line in GOLDEN_SET.read_text(encoding="utf-8").splitlines() if line.strip()]
+def load_golden_set(golden_set: Path) -> list[dict]:
+    cases = [json.loads(line) for line in golden_set.read_text(encoding="utf-8").splitlines() if line.strip()]
     unfilled = [c["id"] for c in cases if "REPLACE" in json.dumps(c)]
     if unfilled:
         print(f"golden set has unfilled placeholder cases: {unfilled}")
@@ -307,10 +308,13 @@ def main() -> None:
     parser.add_argument("--no-score", action="store_true",
                         help="run the pipeline but skip Ragas — free, inspects retrieval only")
     parser.add_argument("--dump", type=Path, default=None, help="write raw per-case rows to JSON")
+    parser.add_argument("--golden-set", choices=["full", "ci"], default="full",
+                        help="which golden set to run (full=50 cases, ci=15 cases for CI)")
     args = parser.parse_args()
 
     settings = get_settings()
-    cases = load_golden_set()
+    golden_set_path = GOLDEN_SET_CI if args.golden_set == "ci" else GOLDEN_SET_FULL
+    cases = load_golden_set(golden_set_path)
     if args.case_id:
         wanted = set(args.case_id)
         cases = [c for c in cases if c["id"] in wanted]

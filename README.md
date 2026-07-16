@@ -57,10 +57,34 @@ Ingest documents:
 uv run python -m scripts.ingest --org demo --path ./data/sample_10k.pdf
 ```
 
-Run evals (CI gate: faithfulness ≥ 0.85, context recall ≥ 0.80):
+## Evaluation strategy
+
+**Two golden sets, one gate:**
+
+- **CI golden set** (`golden_set_ci.jsonl`): 15 cases over 2 documents in `fixtures/ci_corpus/`.
+  Runs on every PR (if `LLM_API_KEY` secret is available). Lightweight — finishes in ~30s on
+  a 4-core machine. Catches regressions in core retrieval/generation paths.
+  Thresholds: **faithfulness ≥ 0.85, context_recall ≥ 0.80**
+  (read from `app/config.py` — CI uses the same source of truth, no hardcoded copies).
+
+- **Full golden set** (`golden_set.jsonl`): 50 cases over 12 real SEC 10-K filings. Local/pre-release
+  only — too large and proprietary-data-heavy for routine CI. Run this before a release.
+
+Run CI evals locally (requires `LLM_API_KEY` in env):
 
 ```bash
-uv run python -m evals.run_evals
+uv run python -m scripts.ci_local                 # full pipeline: lint → test → seed CI corpus → run CI evals → build
+uv run python -m scripts.ci_local --skip-lint     # skip linting
+uv run python -m scripts.ci_local --skip-evals    # run everything except evals
+```
+
+Run full evals locally (requires real corpus at `./corpus/*.pdf`):
+
+```bash
+uv run python -m evals.run_evals                    # 50-case full run
+uv run python -m evals.run_evals --limit 5          # cheap smoke run
+uv run python -m evals.run_evals --case-id ci001    # one case by ID
+uv run python -m evals.run_evals --no-score         # free pipeline inspection (no Ragas)
 ```
 
 Fetch a real demo corpus (SEC 10-K filings for AAPL, MSFT, NVDA) and mint a dev token:
