@@ -159,7 +159,7 @@ def report(rows: list[dict]) -> dict:
     for r in rows:
         by_kind[r["kind"]].append(r)
 
-    print(f"\n=== recall@5 (any expected chunk) by kind " + "=" * 27)
+    print("\n=== recall@5 (any expected chunk) by kind " + "=" * 27)
     print(f"{'kind':<12}{'n':>4}" + "".join(f"{cfg:>12}" for cfg in CONFIGS))
     per_kind: dict[str, dict] = {}
     for kind in sorted(by_kind):
