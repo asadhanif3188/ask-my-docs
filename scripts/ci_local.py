@@ -14,8 +14,8 @@ This requires:
 - LLM_API_KEY in environment (for evals scoring)
 
 Usage:
-    uv run ci-local              # run all checks
-    uv run ci-local --help       # see all options
+    uv run python -m scripts.ci_local            # run all checks
+    uv run python -m scripts.ci_local --help     # see all options
 """
 
 import asyncio

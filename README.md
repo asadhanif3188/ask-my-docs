@@ -234,7 +234,9 @@ caller having already checked it.
 
 ## Input guardrails (defense in depth)
 
-**What it is:** A lightweight, synchronous pre-filter at the entry of `POST /query` (`app/guardrails.py`) that runs three cheap checks in order: (1) **length/shape validation** — rejects empty, oversized, or mostly non-text inputs (base64 blobs, giant number runs); (2) **prompt-injection heuristic** — matches classic families (instruction-override, role-play jailbreaks, model-directed attempts) with case-insensitive regexes; (3) **optional per-org topic allowlist** — off by default, enables coarse opt-in scope hints (e.g., `["revenue", "risk"]`). Rejections return HTTP 400 with a neutral message ("question could not be processed"); every rejection logs the category (never the pattern) at WARNING level with org/user IDs for Project 3 dashboards.
+**What it is:** A lightweight, synchronous pre-filter in `POST /query` (`app/guardrails.py`) that runs three cheap checks in order: (1) **length/shape validation** — rejects empty, oversized, or mostly non-text inputs (base64 blobs, giant number runs); (2) **prompt-injection heuristic** — matches classic families (instruction-override, role-play jailbreaks, model-directed attempts) with case-insensitive regexes; (3) **optional per-org topic allowlist** — off by default, enables coarse opt-in scope hints (e.g., `["revenue", "risk"]`). Rejections return HTTP 400 with a neutral message ("question could not be processed"); every rejection logs the category (never the pattern) at WARNING level with org/user IDs for Project 3 dashboards.
+
+**Ordering (a deliberate deviation):** guardrails run *after* the per-user rate limiter, not before it. The cheapest-check-first instinct says validate input first, but placing the rate limiter first means a flood of malformed or malicious requests still counts against the attacker's per-user budget instead of getting free rejections — the throttle is the thing that caps abuse volume, so it guards the guardrail. Both checks are in-process and sub-millisecond, so the ordering is a policy choice, not a latency one.
 
 **What it is NOT:** the security boundary. Regex injection filters are leaky (trivially obfuscated) and brittle (false-positive prone), so guardrails are tuned to shed *obvious* abuse while accepting some sophisticated attacks. The real defenses are downstream: `generate.py`'s system prompt confines the model to provided source chunks, and `validate.py` rejects any claim without a verbatim citation — both run unconditionally on every request, regardless of what the guardrails pass.
 
@@ -242,7 +244,18 @@ caller having already checked it.
 
 **Observable signal:** every rejection logs a stable category with tenant context (org_id, user_id), never the matched pattern or input text — keeps the endpoint from being a probe oracle for attackers, and feeds Project 3 dashboards for observability. Categories are `length` (empty or oversized), `shape` (non-text like base64/hex/numbers), `topic` (off-allowlist), and `prompt_injection:<family>` where family is one of `instruction_override`, `roleplay`, or `model_directed` — the family suffix lets the dashboard break down attack types rather than lumping them into one total.
 
-**10x-scale note:** Heuristics are a starting point. A future upgrade is a learned classifier or a moderation API call, measured against the golden set for false-positive regression. Today, the heuristic sheds obvious abuse cheaply; the citation validator guarantees correctness.
+**The trade-off — heuristic vs. Llama Guard as a service:** The build plan originally called for [Llama Guard](https://ai.meta.com/research/publications/llama-guard-llm-based-input-output-safeguard-for-human-ai-conversations/) as a dedicated moderation service; we cut it and shipped the in-process heuristic instead. What each buys:
+
+| | This heuristic | Llama Guard as a service |
+|---|---|---|
+| **Catches** | Obvious, well-known injection families and malformed input | Semantically-obfuscated attacks and novel phrasings a regex can't anticipate |
+| **Misses** | Sophisticated / reworded injections (by design — downstream is the backstop) | Little, but at the cost of a full LLM's latency and a maintained model |
+| **Ops cost** | Zero — a regex list in the request path, no extra container, no GPU | A separate GPU-backed service (or per-call moderation API spend), its own scaling, uptime, and version drift |
+| **Latency** | Sub-millisecond, in-process | An extra network + inference round-trip on every query |
+
+**What would make us upgrade:** a *measured* false-negative rate — Project 3's logs record every guardrail category, so once real traffic shows injections slipping past the heuristic *and* reaching a point where the downstream citation gate isn't sufficient, that number justifies the service. Until then, adding a GPU service to catch attacks the validator already neutralizes is cost without evidence.
+
+**10x-scale note:** Heuristics are a starting point. The upgrade path above (a learned classifier or Llama Guard-style moderation call) gets measured against the golden set for false-positive regression before it ships. Today, the heuristic sheds obvious abuse cheaply; the citation validator guarantees correctness.
 
 ## Project layout
 

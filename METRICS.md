@@ -8,36 +8,71 @@ No estimates. Empty cells mean "not yet measured" — never fill with guesses.
 SEC 10-K filings (AAPL/MSFT/NVDA, FY2022–FY2026), 1,973 chunks, all embedded; 1
 corrupt PDF correctly quarantined. Embeddings BAAI/bge-m3 (1024d), reranker
 BAAI/bge-reranker-base, generator + Ragas judge claude-haiku-4-5-20251001.
-Retrieval `top_k=50` → rerank `top_k=5`.
+Retrieval `top_k=50` → rerank `top_k=5`. Retrieval ablation, latency, cost, and the
+current Ragas row measured 2026-07-17 (`run_retrieval_bench.py` + `run_evals.py`).
 
 ## Retrieval quality (golden set, n = 45 answerable)
 
-Recall@5 here = "did an expected chunk survive into the 5 the model was shown".
-Measured from the live eval run (`--dump`), not a separate harness.
+Measured by `evals/run_retrieval_bench.py`, which runs every answerable golden case
+through the four retrieval configurations and scores recall/MRR of the known source
+chunk (`golden_set.jsonl` `chunk_ids`), reusing the production retrieval code paths
+(`_fts_search`, `_dense_search`, `hybrid_retrieve`, `rerank`) — not a private harness.
+Recall@5 (any) = "≥1 expected chunk survived into the 5 the model would be shown";
+(all) = "every expected chunk survived". MRR = reciprocal rank of the first expected
+chunk over the retrieved list (depth = `retrieve_top_k` = 50). Latency is
+retrieval-stage only (excludes generation), timed one query at a time so the numbers
+are single-query cost, not throughput. Reranker runs on CPU (no CUDA GPU — see caption).
 
-| Configuration | Recall@5 | Recall@10 | MRR | p95 latency (ms) |
-|---|---|---|---|---|
-| Dense only (BGE-M3) | | | | |
-| FTS only | | | | |
-| Hybrid + RRF | | | | |
-| Hybrid + RRF + rerank | **76%** (any expected chunk)<br>**69%** (all expected chunks) | | | |
+Reproduce: `uv run python -m evals.run_retrieval_bench --dump bench.json`
 
-Recall@5 by question kind — this is the finding, and it is why the golden set was
-built with `kind` tags:
+| Configuration | Recall@5 (any) | Recall@5 (all) | Recall@10 (any) | MRR | p50 (ms) | p95 (ms) |
+|---|---|---|---|---|---|---|
+| Dense only (BGE-M3) | 75.6% | 71.1% | 75.6% | 0.571 | 445 | 631 |
+| FTS only | 2.2% | 2.2% | 2.2% | 0.022 | 5 | 15 |
+| Hybrid + RRF | 77.8% | 73.3% | 77.8% | 0.581 | 446 | 623 |
+| Hybrid + RRF + rerank (shipped) | 75.6% | 68.9% | **80.0%** | **0.670** | **35,950** | **40,569** |
 
-| Kind | n | Recall@5 (any expected chunk) |
-|---|---|---|
-| factual (FTS-friendly) | 20 | **20/20 = 100%** |
-| semantic (paraphrase, dense branch) | 15 | **7/15 = 47%** |
-| synthesis (2 chunks needed) | 10 | 7/10 = 70% |
+Recall@5 (any expected chunk) by question kind — the ablation, per kind:
 
-Factual retrieval is solved; **paraphrased questions are where retrieval breaks.**
-The semantic cases were written to share almost no vocabulary with their source
-passage, so they can only be served by the dense branch — and the dense branch is
-missing more than half of them. Note the ablation rows above are still empty: we do
-not yet know whether the dense branch is weak on its own or whether RRF is letting
-FTS drown it, and those are different bugs with different fixes. Measure before
-touching anything.
+| Kind | n | Dense | FTS | Hybrid + RRF | + rerank (shipped) |
+|---|---|---|---|---|---|
+| factual | 20 | 90.0% | 5.0% | 95.0% | **100.0%** |
+| semantic (paraphrase) | 15 | 53.3% | 0.0% | 53.3% | 46.7% |
+| synthesis (2 chunks needed) | 10 | 80.0% | 0.0% | 80.0% | 70.0% |
+
+**Interpretation — three measured results, one of which overturns the earlier story:**
+
+1. **FTS is dead weight, not the factual workhorse.** An earlier draft of this file
+   asserted "factual retrieval is solved because factual queries lean on FTS." The
+   ablation says the opposite: FTS-only scores **2.2% recall@5 (1/45), 5% on factual.**
+   `websearch_to_tsquery('english', <full question>)` ANDs every content word, and no
+   single ~500-token chunk contains all ~15 words of a natural-language question, so
+   FTS returns almost nothing rankable. **Dense (BGE-M3) carries retrieval on its own:**
+   dense 75.6% → hybrid 77.8% is a +2.2 pp lift, essentially one factual case
+   (factual 90% → 95%). RRF is fusing a strong dense branch with a near-empty FTS branch.
+
+2. **The reranker is a bad trade on this hardware.** It improves ranking precision —
+   MRR 0.581 → 0.670, factual recall@5 95% → 100%, recall@10 77.8% → 80.0% — but it
+   *lowers* overall recall@5 (77.8% → 75.6%) and hurts exactly the kinds retrieval is
+   already weakest on: semantic 53.3% → 46.7%, synthesis 80% → 70% (synthesis
+   recall@5-all collapses 60% → 40%). It reorders the fused 50 and demotes correct
+   paraphrase/multi-chunk passages below the top 5. And it costs **~35,500 ms p50 /
+   ~40,000 ms p95** — the cross-encoder scores all 50 candidates on CPU with no GPU. Net:
+   **the reranker added ~35 s per query for −2.2 pp recall@5**, buying only MRR and
+   factual precision. On a GPU (~200 ms) it would be an easy keep; on this CPU box it is
+   the single largest latency cost in the system and a live removal candidate — the
+   honest call is "keep it for factual/MRR precision only if it can be moved off CPU."
+
+3. **Paraphrase is still the wall, and no config here clears it.** Semantic recall@5
+   tops out at 53.3% (dense/hybrid) and the reranker makes it worse. This is the same
+   hole every prior measurement found; it is a dense-embedding-quality problem, not a
+   fusion or ranking one, so it needs a stronger embedder or query-side expansion — see
+   the query-rewrite ablation below for why the rewrite we built could not move it.
+
+These numbers corroborate the two figures the earlier live-eval run produced for the
+shipped config (recall@5 any 75.6% ≈ "76%", all 68.9% ≈ "69%", per-kind factual 100% /
+semantic 7/15 / synthesis 7/10) — the benchmark reproduces them exactly and fills in
+the ablation rows that were blank.
 
 ## Contextual retrieval ablation
 
@@ -48,23 +83,93 @@ touching anything.
 
 ## End-to-end query path
 
-| Metric | p50 | p95 | p99 |
+### Retrieval-path latency (ms, retrieval stage only; from `run_retrieval_bench.py`)
+
+| Stage | p50 | p95 | p99 |
 |---|---|---|---|
-| Total latency (ms) | | | |
-| Retrieval stage (ms) | | | |
-| Rerank stage (ms) | | | |
-| Generation stage (ms) | | | |
-| Cost per query ($) | | | |
+| Retrieval — hybrid (embed + 2 SQL + RRF) | 446 | 623 | 682 |
+| Retrieval — dense only (embed + SQL) | 445 | 631 | — |
+| Retrieval — FTS only (SQL) | 5 | 15 | — |
+| Rerank — cross-encoder, 50 candidates, **CPU** | 35,422 | 40,106 | 40,844 |
+| Generation stage | _not instrumented_ | | |
+| Total end-to-end | _not instrumented_ | | |
+
+Generation- and total-latency instrumentation is Project 3 (observability) work and is
+not measured here — left blank rather than estimated. What the retrieval numbers already
+show: **the reranker, not generation, dominates wall-clock.** Hybrid retrieval is ~0.45 s;
+the CPU cross-encoder adds ~35 s on top, so a shipped query cannot return in under ~36 s
+p50 on this hardware regardless of how fast the LLM answers. The BGE-M3 query embedding is
+the bulk of the ~0.45 s retrieval cost (FTS SQL alone is 5 ms).
+
+### Cost per query (measured, not estimated)
+
+From `token_usage` rows recorded by the live eval run on 2026-07-17 (org 54,
+`purpose`-grained; query the table, don't re-estimate). Model **claude-haiku-4-5** for
+generation, repair, and the doc-summary call. Pricing **$1.00 / MTok input,
+$5.00 / MTok output** — Anthropic pricing page (platform.claude.com/docs/en/pricing),
+retrieved 2026-07-17. Ragas judge cost is **excluded** (eval infrastructure, not product);
+`token_usage` only records the system-under-test's own calls. Rewrite is off, so it makes
+no calls and records nothing.
+
+Reproduce: `uv run python -m evals.run_evals --dump rows.json`, then
+`SELECT purpose, input_tokens, output_tokens FROM token_usage WHERE org_id=54 AND day='2026-07-17';`
+
+| Purpose | calls | mean input tok | mean output tok | $/call | total $ (this run) |
+|---|---|---|---|---|---|
+| generation | 49 | 2,177 | 138 | $0.00287 | $0.14057 |
+| repair round | 10 (20.4% of queries) | 2,585 | 187 | $0.00352 | $0.03522 |
+| query rewrite | 0 (feature off) | — | — | $0 | $0 |
+| **Blended cost / query** (÷ 50 golden) | | | | **≈ $0.0035** | $0.17579 total |
+
+**Repair-round frequency: 20.4% (10 of the 49 queries that reached generation) needed a
+one-shot repair round, at ≈ $0.0035 each.** Of those 10 repairs, 9 recovered a valid
+answer and 1 still blocked. Amortized, the repair round adds ≈ $0.0007 to the mean query
+(20.4% × $0.00352) — cheap insurance that buys back 9 answers (see the repair delta
+below). Generation is where the money is: 2,177 input tokens/query is the ~5-chunk context
+(`retrieve_top_k` → `rerank_top_k` = 5 passages plus their context summaries); output is
+tiny (138 tok) because answers are terse cited JSON. At Haiku prices the whole product path
+is ~$0.0035/query; the same context on Sonnet 5 ($3/$15) would be ~5× that, on Opus 4.8
+($5/$25) ~9× — the cheap-tier choice is what keeps per-query cost in fractions of a cent.
+
+_(1 of the 50 golden cases — g003 — hit the degraded-retrieval fallback under concurrency
+this run: the dense branch blipped, FTS-only returned nothing (see the 2.2% FTS row above),
+and the case ended `no_context` without calling generation. Hence 49 generation calls, not
+50. That is the degraded path behaving as designed, recorded honestly, not a dropped case.)_
 
 ## Eval gate history
 
-| Date | Golden set size | Faithfulness | Context recall | Answer relevance |
-|---|---|---|---|---|
-| 2026-07-14 (BASELINE) | 50 | 0.53 | 0.53 | 0.47 |
-| 2026-07-14 (+ repair round) | 50 | **0.65** | **0.67** | **0.59** |
+| Date | Golden set size | Faithfulness | Context recall | Answer relevance | Answered (of 45) |
+|---|---|---|---|---|---|
+| 2026-07-14 (BASELINE) | 50 | 0.53 | 0.53 | 0.47 | 24 |
+| 2026-07-14 (+ repair round) | 50 | 0.65 | 0.67 | 0.59 | 30 |
+| 2026-07-17 (current) | 50 | **0.67** | **0.69** | **0.61** | **32** |
 
-Gate thresholds are 0.85 / 0.80, so both runs **fail (exit 1)**. That was the
-expected first result, and nothing was tuned in response to the baseline.
+Reproduce the current row: `uv run python -m evals.run_evals` (full 50-case run,
+`claude-haiku-4-5` generator + Ragas judge).
+
+Gate thresholds are 0.85 / 0.80, so all three runs **fail (exit 1)** — as expected while
+retrieval, not generation, is the ceiling. The current run is marginally above the
++repair baseline (faithfulness 0.65 → 0.67, recall 0.67 → 0.69, 30 → 32 answered); the
+deltas are within Ragas judge + rerank-ordering run-to-run noise, not a tuning gain — no
+retrieval change was made between them. **The hallucination gate held: 0/5 unanswerable
+cases answered.**
+
+Per-kind (current run), which localizes exactly where the aggregate is lost:
+
+| Kind | n | Answered | Faithfulness | Answer relevance | Context recall |
+|---|---|---|---|---|---|
+| factual | 20 | 18 | 0.90 | 0.81 | 0.90 |
+| semantic (paraphrase) | 15 | 8 | 0.49 | 0.40 | 0.47 |
+| synthesis | 10 | 6 | 0.48 | 0.54 | 0.60 |
+
+The story is unchanged and consistent with the retrieval ablation above: **factual is
+near-solved (0.90 across the board), semantic is where the system bleeds** (only 8/15
+answered, faithfulness 0.49 — because context recall is 0.47, the model has nothing to be
+faithful *to*). Answered-count follows retrieval recall almost exactly (semantic 8/15
+answered vs 46.7% recall@5; synthesis 6/10 vs 70%). Generation faithfulness is not the
+problem — every answered case that had the right chunk scored well; the aggregate is
+dragged down by cases where the right chunk never arrived, scored 0 and kept in the
+denominator (dropping them would report a false 0.9+).
 
 ### Delta: the one-shot repair round (Prompt 1.6)
 
@@ -201,6 +306,14 @@ concurrency=4, zero fallbacks (no API errors): **p50 2,192ms, mean 3,087ms, p95
 6,069ms** per query, on top of retrieval + rerank + generation.
 
 **Verdict: cut — no measurable gain — flag left in place (default off), documented.**
+
+The retrieval ablation above now explains *why* the rewrite could not help, beyond the
+paraphrase result: half of what the rewrite does — strip filler from the FTS form — targets
+a branch that contributes **2.2% recall@5**. Improving the FTS query cannot move a fused
+result that is ~entirely dense-driven. The other half — expand/resolve the dense form — is
+the lever that *could* matter, and it did nothing on the 15 semantic cases (7/15 both ways).
+So the feature was cut on measurement, and the ablation says a *better* dense-form rewrite
+(or a stronger embedder) is the only thing in this area worth re-measuring.
 
 The semantic/paraphrase cases were the entire hypothesis for this feature — "resolve
 pronouns, expand abbreviations, add synonyms" should help exactly the dense-branch
